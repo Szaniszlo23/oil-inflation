@@ -1,0 +1,59 @@
+# config.yaml - every setting in the project. No codes or numbers live in the code.
+# A series stays `verified: false` until we've seen its data and checked the code.
+# Dates are quoted so YAML keeps them as text.
+
+countries: [PL, RO, HU]
+currencies: {PL: PLN, RO: RON, HU: HUF}
+
+series:
+  brent:
+    source: fred
+    code: DCOILBRENTEU            # Brent crude, Europe spot price (EIA via FRED)
+    frequency: daily
+    unit: USD per barrel
+    start: "2000-01-01"
+    verified: true                # tested with the API key
+
+  fx:
+    source: ecb
+    dataset: EXR
+    key: D.HUF+PLN+RON+USD.EUR.SP00.A   # daily reference rates, units of currency per EUR
+    frequency: daily
+    unit: national currency per EUR
+    start: "2000-01-01"
+    verified: false
+
+  hicp_index:
+    source: eurostat
+    dataset: prc_hicp_minr        # HICP, ECOICOP ver.2 (from Jan 2026), monthly
+    unit: I25                     # index 2025=100 - fetch.py checks this against Eurostat's code list
+    frequency: monthly
+    start: "2000-01"
+    verified: false
+    # components get pinned here after the first download, e.g.
+    # components: {headline: ..., energy: ..., fuels: ..., transport_services: ..., core: ...}
+
+  hicp_weights:
+    source: eurostat
+    dataset: prc_hicp_iw          # HICP item weights, ECOICOP ver.2, annual
+    frequency: annual
+    start: "2000"
+    verified: false
+
+  oil_bulletin:
+    source: ec_oil_bulletin
+    page: https://energy.ec.europa.eu/data-and-analysis/weekly-oil-bulletin_en
+    history_url: null             # found automatically on the page; pin it here once confirmed
+    frequency: weekly
+    verified: false
+
+# Model settings - filled in properly when each stage is written (see docs/decisions.md)
+stage1:
+  fuels: [petrol, diesel]
+  max_lags: 8
+
+stage2:
+  horizons: 12
+  lags: 3
+
+policy_handling: [ignore, dummies, exclude]   # every model runs once per option
