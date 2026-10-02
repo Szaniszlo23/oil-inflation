@@ -26,10 +26,10 @@ Every data and modelling choice, when it was made and why. Status is **decided**
 - **Finding:** HU and PL from 2005-01-03, RO from 2008-01-07.
 - **Choice:** the Stage 1 cross-country comparison uses a common sample from 2008-01-07 (`stage1.common_start`); the full 2005 sample for HU and PL is a robustness check. Stage 2 does not use bulletin prices, so it runs from 2000-2001 for all three countries.
 
-### D6. Gaps in the weekly Oil Bulletin series - open (build part decided)
+### D6. Gaps in the weekly Oil Bulletin series - decided (2026-10-02)
 - **Finding:** 1,048 weekly steps, plus 25 two-week and 12 three-week gaps, mostly around holidays (37 gap weeks for HU and PL, 30 for RO since 2008).
 - **Build:** `build.py` keeps the actual bulletin dates, without interpolation, and records `days_since_previous` for every row.
-- **Open for Stage 1:** interpolate single missing weeks onto a regular grid, or estimate on actual dates only.
+- **Choice:** `build.py` puts every country and fuel on a regular Monday grid; missing holiday weeks get linearly interpolated pump prices and an `interpolated` flag (49 weeks for HU and PL, 39 for RO). Brent for those Mondays comes from the daily data. Robustness: Stage 1 without any observation whose lag window touches an interpolated week. Interpolated weeks are left out of the tax-sheet check.
 
 ### D7. Tax changes come from the Oil Bulletin's own tax sheets - decided (2026-10-02)
 - **Finding:** The history file contains dated VAT rates, excise duties and other indirect taxes per country and fuel. Examples: PL cut VAT on fuel to 8% from 2022-02-01 (back to 23% on 2023-01-01) and again from 2026-03-01 (back to 23% on 2026-08-17); PL cut excise from 2026-03-30 to 2026-06-16; RO raised VAT to 21% from 2025-08-01 and cut diesel excise from 2026-07-27 with further changes in September 2026; HU excise changed almost weekly in Aug-Dec 2022 and Mar-Apr 2026, consistent with a rule-based (possibly Brent-linked) mechanism, which still needs confirming in Hungarian law.
@@ -53,9 +53,9 @@ Every data and modelling choice, when it was made and why. Status is **decided**
 - **Choice:** contributions use the weight of the year in question. Results separate how strongly fuel prices respond (Stage 1) from how much fuel weighs in the basket (headline effect = weight x fuel response + indirect effects).
 - **Hypothesis to check, not to state:** the HICP covers spending on a country's territory, including by non-residents, so fuel tourism or transit traffic could raise Hungary's weight.
 
-### D12. Brent timing for weekly prices - open
+### D12. Brent timing for weekly prices - decided (2026-10-02)
 - **Build:** `fuel_weekly` stores Brent both on the bulletin Monday (`brent_*_same_day`) and as the average of the seven days before it (`brent_*_prev_week`), in USD per barrel and local currency per litre.
-- **Open for Stage 1:** which one enters the model (the previous-week average avoids reacting to the same day's price moves).
+- **Choice:** the previous-week average. Weekly changes in pre-tax prices on Brent changes (lags 0-3, 2008+, outside interventions) fit clearly better with it in all six country-fuel pairs: R-squared 0.34-0.57 vs 0.28-0.39 with same-day Brent.
 
 ### D13. Hungarian price cap and post-cap window - decided
 - **Choice:** `retail_price_cap` 2021-11-15 to 2022-12-06 and `post_cap_premium` 2022-12-07 to 2023-09-30, both for petrol and diesel. Berezvai & Helfrich measured the post-cap premium for petrol only; it is applied to diesel too because the mechanism (fewer independent stations, weaker competition) affects both. Robustness: petrol-only post-cap window.
@@ -87,3 +87,37 @@ Every data and modelling choice, when it was made and why. Status is **decided**
   - Tax change: VAT changed, or fixed taxes moved by more than 1% in a week (95% of weekly noise is below 0.1%).
   - Every run prints the periods where the sheets disagree with the prices.
 - **Result:** Poland's 2026 VAT now reads 23% until end of March, 8% from the first April bulletin to end of June, 23% in July to mid-August, 8% for 17-31 August, 23% from September, matching the announced CPN dates. `interventions.csv` keeps its role (non-tax measures only); the tolerances are in `config.yaml` under `build`.
+
+---
+
+## 2026-10-02 - Stage 1
+
+### D18. Policy periods are modelled, not dropped - decided (David's call)
+- **Choice:** the main estimate keeps every week. Normal-times dynamics come from clean weeks (no measure in force, not within 8 weeks after one); the effect of each policy type on the price level, the speed of adjustment and the immediate pass-through is estimated on the weeks with a measure in force, measured against the normal-times model. Policy types are pooled within each country (too few weeks per episode): hard cap / maximum price, margin cap, pump discount, and a level-only post-cap window. `ignore`, `dummies` and `exclude` are comparison versions.
+- **Why not one equation with interactions:** the first version allowed only speed and impact to change under a measure; the lagged terms were then partly estimated from capped weeks and pulled the normal-times response down (Hungary: 0.74 vs 0.99 after 4 weeks against the clean benchmark). Measuring policy effects against a market model estimated on market weeks removes that contamination while still using all weeks.
+- **Speed measure:** weeks until 50% and 90% of the long-run effect, from the full response path, instead of a half-life of the error-correction term alone (which overstated how slow adjustment is).
+
+### D19. First Stage 1 results - noted
+- **Normal times:** about 0.9-1.05 of a crude move reaches the pre-tax pump price within 4 weeks in all six cases; half of it within 1-2 weeks. Consistent with the ECB's "fast and complete in levels".
+- **Long run above 1 since 2020, especially diesel:** 2008-2019 long-run pass-through is 0.87-1.04; on the full 2008-2026 sample 1.04-1.35, highest for diesel. Interpretation: in the 2022 and 2026 supply crises refining margins rose together with crude, so crude alone overstates the cost link. To present as a finding, with the pre-2020 numbers as the market benchmark.
+- **Ignoring policy distorts most in Hungary:** 4-week pass-through 0.50 (petrol) and 0.65 (diesel) when caps are ignored vs 0.99 and 0.94 in normal times.
+- **Cointegration evidence is weak** (Engle-Granger p < 0.05 only for PL diesel; error-correction t-statistics -1.8 to -3.8), consistent with margins shifting in crises. The short-run cumulative pass-through, which is the headline number, does not depend on it.
+- **Caps:** Hungary's hard caps dampen pre-tax pass-through (0.66 petrol, 0.86 diesel after 4 weeks) but not to zero: in 2021-22 the retail price stayed near the cap while the excise fell as Brent rose, so part of the shock was absorbed by the state through taxes and part by margins. Poland's maximum prices are formula-based (wholesale price plus a fixed margin), so pass-through continued under them; the Polish estimates are imprecise (about 16 weeks). Romania's margin cap and 2022 discount show no clear dampening.
+
+---
+
+## 2026-10-02 - Stage 2
+
+### D20. Stage 2 design - decided
+- **Model:** local projections per country, component and horizon (0-12 months); cumulative % change of the HICP index on the monthly % change in Brent (USD), responses scaled to a 10% rise; exchange rate as a separate regressor; 3 lags; month dummies; 2017 break dummy where relevant (D2); euro-area industrial production as global-demand control for headline and core; Newey-West standard errors with h+1 lags; 90% bands.
+- **Main sample from 2008-01** (not 2001 as first planned): the tax control needs the weekly bulletin, which starts in 2008 for Romania, and it keeps Stage 1 and Stage 2 on the same window.
+- **Tax control:** the % change in the fuel price caused by tax changes alone (pre-tax price held fixed). The first version controlled for the ratio of the prices with and without tax; that ratio falls mechanically when oil raises the pre-tax price (fixed excise becomes a smaller share), so it absorbed part of the oil effect itself (fuels response 1.5-2.4% instead of about 3.2-4.0%). Caught by the cross-check against Stage 1.
+- **Policy:** share of the window under a non-tax measure and its interaction with oil (D18 logic). Estimated only with at least 12 policy months: Hungary has 27; Poland (5) and Romania (10) get a level control only, and no policy effect is reported for them.
+- **Windows stay inside each sample:** for samples with an end date, the whole window t..t+h must lie inside it (otherwise later data leak into, e.g., the pre-2021 benchmark).
+- **Check on Stage 1:** the pass-through chain Brent in local currency -> pump price with tax -> HICP fuels, estimated with the same specification. The HICP fuels index tracks the bulletin's pump prices almost one-for-one (monthly regression: 0.87-0.97, R-squared 0.91-0.95).
+
+### D21. First Stage 2 results - preliminary (run without the demand control; to update after the full run)
+- **Headline, per 10% oil rise:** PL +0.30% after 3 months, +0.83% after 12; RO +0.19% / +0.41%; HU +0.42% / +0.46%. The same order of magnitude as Choi et al. (about 0.4 pp per 10%).
+- **Fuels:** +3.2% to +4.0% after 2 months; the chain shows about 85-100% of the full pass-through benchmark (crude share of the pump price x Brent's move in local currency) after 2-3 months, consistent with Stage 1.
+- **Direct vs indirect at 12 months:** PL energy 0.30 pp (fuels 0.12), indirect 0.53; RO 0.19 (0.14), indirect 0.23; HU 0.18 (0.17), indirect 0.28. Core reacts in Poland (+0.39% after 12 months, band excludes zero) but not in Romania or Hungary.
+- **Hungary's caps:** cut the fuel response after 2 months by 2.8 points (of about 4.0), with no lasting difference after 12 months (catch-up). The headline policy effect at 12 months is positive (+1.2 pp) but confounded with the 2022 inflation surge (gas, forint, food); not to be presented as a policy effect.

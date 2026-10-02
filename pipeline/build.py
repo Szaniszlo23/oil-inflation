@@ -217,6 +217,16 @@ def load_hicp(snap, cfg):
     return hicp[["country", "month", "component", "coicop", "index", "status"]]
 
 
+def load_ea_ip(snap, cfg):
+    s = cfg["series"]["ea_industrial_production"]
+    path = snap / f"eurostat_{s['dataset']}.json"
+    if not path.exists():
+        raise FileNotFoundError(f"{path.name} not in snapshot {snap.name} - run `python run.py --refresh`")
+    df = jsonstat_long(json.loads(path.read_text()))
+    ip = pd.Series(df["value"].values, index=pd.PeriodIndex(df["time"], freq="M").to_timestamp())
+    return ip.sort_index().rename("ea_ip")
+
+
 def load_weights(snap, cfg):
     w_cfg = cfg["series"]["hicp_weights"]
     codes = set(cfg["series"]["hicp_index"]["components"].values())
@@ -279,6 +289,7 @@ def build_fuel_weekly(snap, cfg, fx, brent, iv):
 
 def build_hicp_monthly(snap, cfg, fx, brent, iv, weekly):
     hicp = load_hicp(snap, cfg)
+    ea_ip = load_ea_ip(snap, cfg)
     weights = load_weights(snap, cfg)
     hicp["year"] = hicp.month.dt.year
     hicp = hicp.merge(weights, on=["country", "coicop", "year"], how="left")
@@ -302,6 +313,11 @@ def build_hicp_monthly(snap, cfg, fx, brent, iv, weekly):
             d[f"{fuel}_with_tax_lcu"] = wf.price_with_tax_lcu.mean()
             d[f"{fuel}_pre_tax_lcu"] = wf.price_pre_tax_lcu.mean()
         d["tax_change"] = w.groupby("month").tax_change.any().reindex(d.index, fill_value=False).astype(bool)
+        for fuel in cfg["series"]["oil_bulletin"]["fuels"]:
+            wf = w[w.fuel == fuel].groupby("month")
+            d[f"{fuel}_vat_pct"] = wf.vat_pct.mean()
+            d[f"{fuel}_fixed_taxes_lcu"] = wf.fixed_taxes_lcu.mean()
+        d["ea_ip"] = ea_ip.reindex(d.index)
 
         # share of days in the month with at least one non-tax policy measure
         days = pd.date_range(d.index.min(), d.index.max() + pd.offsets.MonthEnd(0), freq="D")
@@ -357,6 +373,9 @@ def check(weekly, monthly, cfg):
         missing = set(cfg["series"]["hicp_index"]["components"]) - found
         if missing:
             problems.append(f"{ctr}: HICP components missing: {sorted(missing)}")
+
+    if monthly["ea_ip"].notna().sum() == 0:
+        problems.append("euro-area industrial production is empty")
 
     total = monthly[monthly.component == "headline"].drop_duplicates(["country", "weight"])
     total = total.dropna(subset=["weight"])

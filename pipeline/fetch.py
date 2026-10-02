@@ -5,6 +5,7 @@ Sources (codes and URLs come from config.yaml):
   - Brent crude, daily .............. FRED API
   - Exchange rates, daily ........... ECB Data Portal API
   - HICP indices and item weights ... Eurostat Statistics API (JSON-stat)
+  - Euro-area industrial production . Eurostat Statistics API (JSON-stat)
   - Pump prices with/without taxes .. EC Weekly Oil Bulletin price history file
 
 Files are saved exactly as received - nothing is cleaned here, that's build.py.
@@ -148,6 +149,17 @@ def fetch_eurostat(snap, cfg):
     snap.save(f"eurostat_{w['dataset']}.json", r, "Eurostat")
 
 
+def fetch_eurostat_ip(snap, cfg):
+    """Euro-area industrial production: global-demand control for Stage 2."""
+    s = cfg["series"]["ea_industrial_production"]
+    r, body = _eurostat(s["dataset"], {"geo": s["geo"], "lastTimePeriod": 1})
+    snap.save(f"eurostat_{s['dataset']}_codelist.json", r, "Eurostat")
+    for dimension, code in s["filters"].items():
+        _check_code(body, dimension, code, s["dataset"])
+    r, _ = _eurostat(s["dataset"], {"geo": s["geo"], **s["filters"], "sinceTimePeriod": s["start"]})
+    snap.save(f"eurostat_{s['dataset']}.json", r, "Eurostat")
+
+
 def fetch_oil_bulletin(snap, cfg):
     s = cfg["series"]["oil_bulletin"]
     url = s.get("history_url")
@@ -178,6 +190,7 @@ SOURCES = [
     ("Brent crude (FRED)", fetch_fred),
     ("Exchange rates (ECB)", fetch_ecb),
     ("HICP indices and weights (Eurostat)", fetch_eurostat),
+    ("Euro-area industrial production (Eurostat)", fetch_eurostat_ip),
     ("Pump prices (EC Weekly Oil Bulletin)", fetch_oil_bulletin),
 ]
 
