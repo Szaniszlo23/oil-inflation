@@ -1,5 +1,5 @@
 # config.yaml - every setting in the project. No codes or numbers live in the code.
-# A series stays `verified: false` until we've seen its data and checked the code.
+# A series is `verified: true` only after its data has been downloaded and checked.
 # Dates are quoted so YAML keeps them as text.
 
 countries: [PL, RO, HU]
@@ -12,7 +12,7 @@ series:
     frequency: daily
     unit: USD per barrel
     start: "2000-01-01"
-    verified: true                # tested with the API key
+    verified: true
 
   fx:
     source: ecb
@@ -21,39 +21,71 @@ series:
     frequency: daily
     unit: national currency per EUR
     start: "2000-01-01"
-    verified: false
+    verified: true
 
   hicp_index:
     source: eurostat
-    dataset: prc_hicp_minr        # HICP, ECOICOP ver.2 (from Jan 2026), monthly
-    unit: I25                     # index 2025=100 - fetch.py checks this against Eurostat's code list
+    dataset: prc_hicp_minr        # HICP, ECOICOP ver.2 (from Jan 2026), monthly, back-cast to 2000
+    unit: I25                     # Index, 2025=100
     frequency: monthly
     start: "2000-01"
-    verified: false
-    # components get pinned here after the first download, e.g.
-    # components: {headline: ..., energy: ..., fuels: ..., transport_services: ..., core: ...}
+    verified: true
+    components:                   # coicop18 codes, checked against Eurostat's code list
+      headline: TOTAL             # all-items HICP
+      energy: NRG                 # flagged "definition differs" before 2017, break 2017-01
+      fuels: CP0722               # fuels and lubricants for personal transport equipment
+      diesel: CP07221             # from 2014-12 only
+      petrol: CP07222             # from 2014-12 only
+      electricity_gas: ELC_GAS    # electricity, gas, solid fuels, heat; same 2017 break as energy
+      transport_services: CP073   # passenger transport services
+      food: FOOD                  # food including alcohol and tobacco
+      core: TOT_X_NRG_FOOD        # excl. energy, food, alcohol, tobacco; same 2017 break
+      administered: AP            # administered prices
+      excl_administered: TOT_X_AP # all-items excluding administered prices
 
   hicp_weights:
     source: eurostat
-    dataset: prc_hicp_iw          # HICP item weights, ECOICOP ver.2, annual
+    dataset: prc_hicp_iw          # HICP item weights (per mille), ECOICOP ver.2, annual
     frequency: annual
     start: "2000"
-    verified: false
+    verified: true
 
   oil_bulletin:
     source: ec_oil_bulletin
     page: https://energy.ec.europa.eu/data-and-analysis/weekly-oil-bulletin_en
-    history_url: null             # found automatically on the page; pin it here once confirmed
-    frequency: weekly
-    verified: false
+    history_url: null             # link changes with every update; found automatically, logged per snapshot
+    frequency: weekly             # Monday prices; some 2-3 week gaps around holidays
+    unit: EUR per 1000 litres     # all countries, including HU, PL, RO
+    verified: true
+    sheets:
+      with_tax: Prices with taxes
+      without_tax: Prices wo taxes
+      vat: VAT                          # %, dated changes
+      excise: Excise duties             # national currency per 1000 litres, dated changes
+      other_taxes: Other Indirect Taxes # national currency per 1000 litres, dated changes
+    columns:                      # {ctr} = country code, {fuel} = product
+      with_tax: "{ctr}_price_with_tax_{fuel}"
+      without_tax: "{ctr}_price_wo_tax_{fuel}"
+    fuels: {petrol: euro95, diesel: diesel}
+    tax_labels: {petrol: "Euro-super 95", diesel: "Gas oil automobile"}   # column labels in the tax sheets
+    first_week: {PL: "2005-01-03", HU: "2005-01-03", RO: "2008-01-07"}
+
+# Sanity checks in build.py
+build:
+  fx_max_staleness_days: 4          # an ECB rate may be at most this old on a bulletin date (holidays)
+  implied_fx_tolerance_pct: 0.1     # bulletin's implied exchange rate vs ECB, median abs. difference (decisions D4)
+  implied_fx_check_from: "2015-01-01"
 
 # Model settings - filled in properly when each stage is written (see docs/decisions.md)
 stage1:
   fuels: [petrol, diesel]
   max_lags: 8
+  common_start: "2008-01-07"        # cross-country comparison on a common sample (decisions D5)
 
 stage2:
   horizons: 12
   lags: 3
+  break_month: "2017-01"            # ECOICOP ver.2 back-cast break (decisions D2)
+  break_components: [energy, electricity_gas, core]
 
 policy_handling: [ignore, dummies, exclude]   # every model runs once per option

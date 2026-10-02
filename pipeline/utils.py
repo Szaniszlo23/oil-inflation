@@ -23,6 +23,7 @@ TABLES = ROOT / "outputs" / "tables"
 
 # --- Units -------------------------------------------------------------------
 LITRES_PER_BARREL = 158.987294928  # 42 US gallons x 3.785411784 litres
+LITRES_PER_KL = 1000               # Oil Bulletin prices and taxes are per 1000 litres
 
 
 def ensure_dirs():

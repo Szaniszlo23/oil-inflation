@@ -1,0 +1,4 @@
+country,fuel,measure,start,end,size,unit,source
+HU,petrol;diesel,retail_price_cap,2021-11-15,2022-12-06,480,HUF/l,"Berezvai & Helfrich (2024), Energy Strategy Reviews 54, 101472, https://doi.org/10.1016/j.esr.2024.101472"
+HU,petrol;diesel,post_cap_premium,2022-12-07,2023-09-30,,,"Berezvai & Helfrich (2024), https://doi.org/10.1016/j.esr.2024.101472 (premium measured for petrol; applied to diesel too, see decisions D13)"
+RO,petrol;diesel,pump_price_discount,2022-07-01,2022-12-31,0.50,RON/l,"Jul-Sep: https://economedia.ro/guvernul-a-aprobat-ordonanta-care-sustine-reducerea-cu-50-de-bani-pe-litru-a-carburantilor-nu-se-stie-cand-se-vor-vedea-ieftiniri-la-pompa-ministrul-energiei-sa-le-lasam-operatorilor-un-termen-sa-se-a.html; Oct-Dec extension: https://romania-actualitati.ro/news-in-english/five-emergency-ordinances-id169031.html"
