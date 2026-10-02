@@ -178,6 +178,10 @@ def run(cfg):
                                 "horizon": h, "n_obs": int(res.nobs),
                                 "regime": "normal", "measure": "response", "estimate": k * b,
                                 "lower": k * (b - z * se), "upper": k * (b + z * se)})
+        results.append({"country": ctr, "component": "pump_price", "sample": "main", "spec": "chain",
+                        "policy_handling": "interactions", "main_estimate": False, "horizon": np.nan,
+                        "n_obs": np.nan, "regime": "normal", "measure": "crude_share",
+                        "estimate": crude_share[ctr], "lower": np.nan, "upper": np.nan})
         note = "" if identified else " (policy effect not estimated: too few policy months, level control only)"
         print(f"    {ctr}: {policy_months} months with a non-tax measure{note}")
 

@@ -13,7 +13,10 @@ Writes outputs/figures/:
   06_components         Stage 2: component responses after 12 months
   07_direct_indirect    Stage 2: headline response split into direct and indirect
   08_chain              Brent -> pump price -> HICP fuels after 2 months
-and outputs/tables/country_comparison.csv.
+  09_counterfactual_2026          2026 interventions: actual vs. counterfactual pump prices
+  10_counterfactual_hungary_2021  Hungary's 2021-22 cap and the post-cap premium
+  11_counterfactual_inflation     direct effect of the interventions on headline inflation
+and outputs/tables/country_comparison.csv, policy_episodes.csv.
 """
 import matplotlib
 
@@ -253,6 +256,9 @@ def fig_direct_indirect(cfg, s2, h=12):
 
 def fig_chain(cfg, s2, h=2):
     ch = s2[(s2.spec == "chain")]
+    if not (ch.measure == "crude_share").any():
+        raise RuntimeError("stage2_responses.csv has no pass-through chain results - it was produced by an older "
+                           "stage2.py. Rerun: python run.py --from stage2")
     fig, ax = plt.subplots(figsize=(8, 4))
     bars = [("Brent in local currency", "brent_lcu", COLORS["crude"]),
             ("Full pass-through benchmark", None, COLORS["light"]),
@@ -275,6 +281,96 @@ def fig_chain(cfg, s2, h=2):
     ax.set_title(f"From crude to the HICP: responses {h} months after a {cfg['stage2']['scale']}% oil price rise")
     save(fig, "08_chain", "Benchmark = crude share of the retail price (VAT included) x move in Brent in local currency.",
          note_y=-0.1)
+
+
+def _cf_lines(ax, e, color, first):
+    on = e[e.in_force]
+    ax.axvspan(on.date.min(), on.date.max(), color=COLORS["policy"], lw=0, zorder=0)
+    ax.plot(e.date, e.retail_actual, color=color, lw=2, label="Actual" if first else None)
+    ax.plot(e.date, e.retail_cf_market, color=COLORS["grey"], lw=1.5, ls="--",
+            label="Without the market measure" if first else None)
+    ax.plot(e.date, e.retail_cf_full, color="black", lw=1, ls=":",
+            label="Without any measure (taxes as before)" if first else None)
+
+
+def fig_counterfactual_prices(cfg, pol):
+    """2026 episodes in all three countries, and Hungary's 2021-23 cap with its aftermath."""
+    w = pol[(pol.level == "weekly") & (pol.fuel == "petrol")].copy()
+    w["date"] = pd.to_datetime(w["date"])
+    w["episode_start"] = pd.to_datetime(w["episode_start"])
+    recent = pd.Timestamp(cfg["charts"]["recent_episodes_start"])
+    note = ("Counterfactual: Stage 1 normal-times model run on the actual Brent path from the week before each "
+            "measure. Shaded: measure in force.")
+
+    fig, axes = plt.subplots(1, 3, figsize=(13, 4))
+    for ax, ctr in zip(axes, cfg["countries"]):
+        d = w[(w.country == ctr) & (w.episode_start >= recent)].sort_values("date")
+        for i, (_, e) in enumerate(d.groupby("episode_start")):
+            _cf_lines(ax, e, C[ctr], i == 0)
+        ax.set_title(f"{NAMES[ctr]}, petrol, {cfg['currencies'][ctr]} per litre")
+        ax.xaxis.set_major_locator(mdates.MonthLocator())
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b"))
+        ax.legend(loc="upper left", fontsize=7.5)
+    fig.suptitle(f"2026 interventions: actual pump prices vs. model counterfactual ({recent.year})",
+                 x=0.01, ha="left", fontweight="bold")
+    save(fig, "09_counterfactual_2026", note)
+
+    first_hu = cfg["charts"]["hungary_episode_start"]
+    d = w[(w.country == "HU") & (w.episode_start == pd.Timestamp(first_hu))].sort_values("date")
+    if len(d):
+        fig, ax = plt.subplots(figsize=(9, 4))
+        _cf_lines(ax, d, C["HU"], True)
+        cap_end = d[d.phase.str.startswith("retail_price_cap")].date.max()
+        ax.axvline(cap_end, color=COLORS["accent"], lw=1, ls="--")
+        ax.text(cap_end, ax.get_ylim()[1], " cap lifted", color=COLORS["accent"], va="top", fontsize=8)
+        ax.set_title("Hungary 2021-23: petrol price under the cap and after it, HUF per litre")
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
+        ax.legend(loc="upper left", fontsize=8)
+        save(fig, "10_counterfactual_hungary_2021", note + " Shading includes the post-cap window to Sep 2023.")
+
+
+def fig_counterfactual_inflation(cfg, pol):
+    m = pol[pol.level == "monthly"].copy()
+    m["date"] = pd.to_datetime(m["date"])
+    start = pd.Timestamp(cfg["charts"]["policy_start"])
+    end = m["date"].max()
+    fig, axes = plt.subplots(1, 3, figsize=(13, 3.8), sharey=True, sharex=True)
+    for ax, ctr in zip(axes, cfg["countries"]):
+        d = m[(m.country == ctr) & (m.date >= start)].sort_values("date").set_index("date")
+        ax.set_xlim(start, end + pd.DateOffset(months=1))
+        market = d["headline_effect_market_pp"].fillna(0)
+        taxes = (d["headline_effect_full_pp"] - d["headline_effect_market_pp"]).fillna(0)
+        width = 25
+        ax.bar(d.index, market, width=width, color=C[ctr], label="Caps, margin caps, discounts")
+        ax.bar(d.index, taxes, width=width, bottom=np.where((taxes >= 0) == (market >= 0), market, 0),
+               color=COLORS["light"], label="Tax changes")
+        ax.axhline(0, color=COLORS["grey"], lw=0.8)
+        ax.set_title(NAMES[ctr])
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
+        ax.legend(loc="upper left", fontsize=7.5)
+    axes[0].set_ylabel("pp of headline HICP inflation (y/y)")
+    fig.suptitle("Direct effect of fuel interventions on headline inflation (y/y): negative = inflation lowered",
+                 x=0.01, ha="left", fontweight="bold")
+    save(fig, "11_counterfactual_inflation",
+         "Fuel weight x (actual - counterfactual annual change of the fuels index). Direct effect only; "
+         "includes base effects after a measure ends.")
+
+
+def policy_table(pol):
+    w = pol[pol.level == "weekly"]
+    rows = []
+    for (ctr, phase), d in w.groupby(["country", "phase"], sort=False):
+        by_week = d.groupby("date")[["market_effect_pct", "tax_effect_pct", "total_effect_pct"]].mean()
+        rows.append({"country": NAMES[ctr], "measure (phase)": phase,
+                     "from": pd.to_datetime(by_week.index.min()).date(), "to": pd.to_datetime(by_week.index.max()).date(),
+                     "weeks": len(by_week),
+                     "pump price vs. counterfactual, market measures, avg %": by_week.market_effect_pct.mean(),
+                     "... peak %": by_week.market_effect_pct.loc[by_week.market_effect_pct.abs().idxmax()],
+                     "tax changes, avg %": by_week.tax_effect_pct.mean(),
+                     "total, avg %": by_week.total_effect_pct.mean()})
+    table = pd.DataFrame(rows).round(1)
+    table.to_csv(utils.TABLES / "policy_episodes.csv", index=False)
+    print("    policy_episodes.csv")
 
 
 # --- Table ---------------------------------------------------------------------------------------
@@ -343,4 +439,13 @@ def run(cfg):
     fig_components(cfg, s2)
     fig_direct_indirect(cfg, s2)
     fig_chain(cfg, s2)
+    pol_path = utils.RESULTS / "policy_counterfactual.csv"
+    if pol_path.exists():
+        pol = pd.read_csv(pol_path)
+        fig_counterfactual_prices(cfg, pol)
+        fig_counterfactual_inflation(cfg, pol)
+        policy_table(pol)
+    else:
+        print("    note: outputs/results/policy_counterfactual.csv not found - charts 09-11 skipped "
+              "(run: python run.py --from policy)")
     print(country_table(cfg, weekly, monthly, s1, s2).to_string())
