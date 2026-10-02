@@ -14,7 +14,9 @@ Conversions (see docs/decisions.md):
   - Taxes: VAT, excise and other indirect taxes from the bulletin's own tax sheets (D7),
     checked against the bulletin's prices; where they disagree, the rates embedded in
     the prices are used and the periods are reported (D17)
-  - Policy flags: price caps, subsidies etc. from interventions.csv
+  - Weekly grid: holiday gaps in the bulletin are filled by linear interpolation and
+    flagged (`interpolated`); Brent for those Mondays comes from the daily data (D6)
+  - Policy flags: price caps, subsidies etc. from interventions.csv, one column per type
 
 Units: "lcu" = local currency (PLN, RON, HUF); all prices and taxes are per litre.
 The script stops with an error if any sanity check fails.
@@ -156,11 +158,12 @@ def effective_taxes(g, valid_vat, b):
     # sheet consistent -> sheet rate; clear mismatch -> the legal rate the prices imply;
     # unclear mismatch (e.g. a transition week) -> carry the previous week's rate forward
     vat = g.vat_pct_sheet.where(~mismatch, np.nan).where(~use_implied, nearest)
+    vat[g.interpolated] = np.nan                    # interpolated weeks carry the previous rate
     g["vat_pct"] = vat.ffill().fillna(g.vat_pct_sheet)
     g["fixed_taxes_lcu"] = g.price_with_tax_lcu / (1 + g.vat_pct / 100) - g.price_pre_tax_lcu
 
     fixed_gap = (g.fixed_taxes_lcu / fixed_sheet - 1).abs() * 100
-    g["tax_sheet_mismatch"] = mismatch | (fixed_gap > b["fixed_tax_mismatch_pct"])
+    g["tax_sheet_mismatch"] = (mismatch | (fixed_gap > b["fixed_tax_mismatch_pct"])) & ~g.interpolated
 
     vat_changed = g.vat_pct.ne(g.vat_pct.shift()) & g.vat_pct.shift().notna()
     fixed_moved = (g.fixed_taxes_lcu.pct_change().abs() * 100) > b["tax_change_threshold_pct"]
@@ -182,8 +185,8 @@ def report_tax_mismatches(weekly):
         print(f"      {ctr} {fuel}: {len(g)} weeks - " + ", ".join(spans))
 
 
-def load_interventions():
-    cols = ["country", "fuel", "measure", "start", "end", "size", "unit", "source"]
+def load_interventions(cfg):
+    cols = ["country", "fuel", "measure", "type", "start", "end", "size", "unit", "source"]
     path = utils.INTERVENTIONS_PATH
     if not path.exists() or path.stat().st_size == 0:
         print("    note: interventions.csv is empty - no policy flags")
@@ -192,6 +195,9 @@ def load_interventions():
     missing = set(cols) - set(iv.columns)
     if missing:
         raise ValueError(f"interventions.csv is missing columns: {sorted(missing)}")
+    unknown = set(iv["type"]) - set(cfg["policy_types"])
+    if unknown:
+        raise ValueError(f"interventions.csv has types not listed in config.yaml policy_types: {sorted(unknown)}")
     iv["fuel"] = iv["fuel"].str.split(";")
     return iv.explode("fuel")
 
@@ -229,7 +235,14 @@ def build_fuel_weekly(snap, cfg, fx, brent, iv):
     taxes = {k: load_tax_steps(snap, cfg, k) for k in ("vat", "excise", "other_taxes")}
     rows = []
     for (ctr, fuel), g in prices.groupby(["country", "fuel"]):
-        g = g.sort_values("date").copy()
+        # regular Monday grid: holiday gaps get linearly interpolated prices and a flag (D6)
+        g = g.set_index("date").sort_index()
+        grid = pd.date_range(g.index.min(), g.index.max(), freq="W-MON")
+        g = g.reindex(grid).rename_axis("date")
+        price_cols = ["price_with_tax_eur", "price_pre_tax_eur"]
+        g["interpolated"] = g[price_cols].isna().any(axis=1)
+        g[price_cols] = g[price_cols].interpolate(method="time")
+        g = g.reset_index().assign(country=ctr, fuel=fuel)
         dates = pd.DatetimeIndex(g.date)
         cur = cfg["currencies"][ctr]
 
@@ -254,10 +267,12 @@ def build_fuel_weekly(snap, cfg, fx, brent, iv):
         g["brent_usd_prev_week"] = [brent[(brent.index >= a) & (brent.index < b)].mean() for a, b in week_before]
         g["brent_lcu_prev_week"] = [daily[(daily.index >= a) & (daily.index < b)].mean() for a, b in week_before]
 
-        g["days_since_previous"] = dates.to_series().diff().dt.days.values
         sub = iv[(iv.country == ctr) & (iv.fuel == fuel)]
         g["intervention"] = [";".join(sub[(sub.start <= d) & (sub.end >= d)].measure) for d in dates]
         g["in_intervention"] = g.intervention != ""
+        for ptype in cfg["policy_types"]:
+            m = sub[sub.type == ptype]
+            g[f"policy_{ptype}"] = [bool(((m.start <= d) & (m.end >= d)).any()) for d in dates]
         rows.append(g)
     return pd.concat(rows).reset_index(drop=True)
 
@@ -298,6 +313,11 @@ def build_hicp_monthly(snap, cfg, fx, brent, iv, weekly):
             active |= mask
             names[mask] = names[mask].where(names[mask] == "", names[mask] + ";") + m.measure
         d["intervention_share"] = active.groupby(active.index.to_period("M")).mean().to_timestamp()
+        for ptype in cfg["policy_types"]:
+            on = pd.Series(False, index=days)
+            for _, m in sub[sub.type == ptype].iterrows():
+                on |= (days >= m.start) & (days <= m.end)
+            d[f"share_{ptype}"] = on.groupby(on.index.to_period("M")).mean().to_timestamp()
         d["interventions"] = names.groupby(names.index.to_period("M")).agg(
             lambda x: ";".join(sorted({n for v in x for n in v.split(";") if n}))).to_timestamp()
         d["country"] = ctr
@@ -356,8 +376,8 @@ def check(weekly, monthly, cfg):
     if problems:
         raise ValueError("Sanity checks failed:\n  - " + "\n  - ".join(problems))
 
-    gaps = weekly[weekly.days_since_previous > 7].drop_duplicates(["country", "date"]).groupby("country").size()
-    print(f"    checks passed; bulletin weeks following a gap of more than 7 days (decisions D6): {gaps.to_dict()}")
+    filled = weekly[weekly.interpolated].drop_duplicates(["country", "date"]).groupby("country").size()
+    print(f"    checks passed; holiday weeks filled by interpolation (decisions D6): {filled.to_dict()}")
 
 
 # --- Entry point (called by run.py) -------------------------------------------------------
@@ -370,7 +390,7 @@ def run(cfg):
 
     fx = load_fx(snap)
     brent = load_brent(snap, cfg)
-    iv = load_interventions()
+    iv = load_interventions(cfg)
 
     weekly = build_fuel_weekly(snap, cfg, fx, brent, iv)
     monthly = build_hicp_monthly(snap, cfg, fx, brent, iv, weekly)

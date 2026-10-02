@@ -80,16 +80,36 @@ build:
   fixed_tax_mismatch_pct: 1.0       # excise + other taxes: sheet vs prices, % gap that counts as a mismatch
   tax_change_threshold_pct: 1.0     # weekly move in fixed taxes that counts as a tax change (95% of weekly noise is < 0.1%)
 
-# Model settings - filled in properly when each stage is written (see docs/decisions.md)
+# Policy measure types allowed in interventions.csv (column `type`)
+policy_types: [hard_cap, margin_cap, discount, post_cap]
+
+# Every model runs once per option; `interactions` is the main estimate (decisions D18)
+policy_handling: [interactions, ignore, dummies, exclude]
+
 stage1:
+  y: price_pre_tax_lcu              # pre-tax pump price, local currency per litre
+  x: brent_lcu_prev_week            # Brent, 7-day average before the bulletin Monday (D12)
   fuels: [petrol, diesel]
-  max_lags: 8
-  common_start: "2008-01-07"        # cross-country comparison on a common sample (decisions D5)
+  samples:                          # null start = each country's first bulletin week
+    main: {start: "2008-01-07", end: null}      # common sample (D5)
+    pre2020: {start: "2008-01-07", end: "2019-12-30"}
+    full: {start: null, end: null}               # HU and PL from 2005
+  interaction_types: [hard_cap, margin_cap, discount]   # change level, speed and impact
+  level_only_types: [post_cap]                          # change the level only
+  exclude_after_weeks: 8            # weeks after a measure that count as not clean
+  max_lags: 8                       # AIC lag search for dy and dx
+  dols_leads_lags: 4                # leads/lags of dx in the long-run (DOLS) regression
+  hac_lags: 8                       # Newey-West
+  horizons: [0, 1, 2, 4, 8, 12, 26, 52]   # weeks, cumulative pass-through reported
+  max_horizon_weeks: 104            # path length used for "weeks to 50% / 90%"
+  draws: 1000                       # simulated coefficient draws for the bands
+  seed: 42
+  elasticity_weeks: 104             # recent clean weeks used for the retail-price elasticity
+  min_clean_weeks_for_coint: 104
+  sanity: {long_run_min: 0.6, long_run_max: 1.4, max_weeks_to_90pct: 26}
 
 stage2:
   horizons: 12
   lags: 3
   break_month: "2017-01"            # ECOICOP ver.2 back-cast break (decisions D2)
   break_components: [energy, electricity_gas, core]
-
-policy_handling: [ignore, dummies, exclude]   # every model runs once per option
