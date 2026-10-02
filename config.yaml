@@ -75,6 +75,10 @@ build:
   fx_max_staleness_days: 4          # an ECB rate may be at most this old on a bulletin date (holidays)
   implied_fx_tolerance_pct: 0.1     # bulletin's implied exchange rate vs ECB, median abs. difference (decisions D4)
   implied_fx_check_from: "2015-01-01"
+  vat_mismatch_pp: 1.0              # sheet VAT vs VAT implied by prices: gap that counts as a mismatch (D17)
+  vat_snap_pp: 0.2                  # implied VAT must be this close to a rate the country has used
+  fixed_tax_mismatch_pct: 1.0       # excise + other taxes: sheet vs prices, % gap that counts as a mismatch
+  tax_change_threshold_pct: 1.0     # weekly move in fixed taxes that counts as a tax change (95% of weekly noise is < 0.1%)
 
 # Model settings - filled in properly when each stage is written (see docs/decisions.md)
 stage1:

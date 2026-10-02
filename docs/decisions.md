@@ -64,8 +64,26 @@ Every data and modelling choice, when it was made and why. Status is **decided**
 ### D14. Romania's 2022 pump discount - decided
 - **Finding:** 0.50 RON/l off pump prices (0.25 from the state budget, 0.25 voluntary retailer discount), 2022-07-01 to 2022-09-30, extended 2022-10-01 to 2022-12-31. Sources in `interventions.csv`.
 
-### D15. Non-tax measures in 2026 - open
-- **To research before Stage 1:** whether HU, PL or RO introduced price caps, subsidies or regulated fuel prices in 2026 (tax changes are already covered by the bulletin's tax sheets). Only verified measures go into `interventions.csv`.
+### D15. Non-tax measures in 2026 - decided (2026-10-02)
+- **Finding:** all three countries intervened in spring 2026. Added to `interventions.csv` with sources:
+  - HU: retail price cap ("protected price") 595 HUF/l petrol, 615 HUF/l diesel, 2026-03-10 to 2026-06-26 (law ending it in force 2026-06-27). Applied to Hungarian-registered vehicles; the Oil Bulletin reports prices at about the cap level in this period, so the cap is in the data.
+  - PL: daily maximum retail prices (CPN package) 2026-03-31 to 2026-06-30, and again 2026-08-17 to 2026-08-31.
+  - RO: margin cap at each operator's 2025 average (OUG 19/2026), crisis period 2026-04-01 to 2026-06-30; renewed by Law 162/2026 (promulgated 2026-08-04) until 2026-10-31. The exact start of the law's application is to confirm (entered as 2026-08-05; one day either way does not matter at weekly frequency).
+- **Implication:** spring 2026 is a policy period in all three countries, not a clean test of market pass-through. In September 2026 Brent rose again with the HU and PL caps no longer in force, while RO's margin cap still applies.
+- Renamed existing measures with their year (`retail_price_cap_2021`, `post_cap_premium_2023`, `pump_price_discount_2022`) so every episode can get its own dummy.
 
 ### D16. Hungary's tax changes are near-weekly in 2022 and 2026 - noted
 - **Finding:** `tax_change` is true in 63 Hungarian bulletin weeks since mid-2021, because excise was adjusted almost weekly in Aug-Dec 2022 and Mar-Apr 2026. Stage 1 runs on pre-tax prices, so this mainly matters for retail-price elasticities and for the tax-change dummies.
+
+### D17. The bulletin's tax sheets are misdated in places - decided (2026-10-02)
+- **Finding:** the price sheets are internally consistent (taxes = price with tax - price without tax, exact), but the dates in the VAT and excise sheets contradict the prices in several places:
+  - PL VAT: the sheet has 8% from 2026-03-01 to 2026-08-16; the prices imply 23% until the end of March, 8% from about 2026-03-31 to 2026-06-30, 23% in July-mid August, 8% for 2026-08-17 to 2026-08-31, then 23%. The prices match the announced CPN dates.
+  - RO diesel excise: prices imply a cut to 2.504 RON/l from about early May to end June and a variable rate from late July; the sheet only shows changes from 2026-07-27.
+  - HU excise: the sheet shows 142.55 HUF/1000 l x 1000 (petrol) from 2026-07-20; prices imply 139.55 throughout.
+  - Smaller gaps before 2026: PL 2024 and RO 2008 imply a VAT about 1-2 points too high, i.e. a tax component missing from the "other taxes" sheet.
+- **Choice (automatic, no manual tax rows needed):** `build.py` derives the tax rates embedded in the prices and uses them wherever the sheets disagree:
+  - VAT: the sheet rate where consistent with the prices; where the prices clearly imply a different legal rate (gap above 1 point, implied rate within 0.2 points of a rate the country has used), that rate; in unclear transition weeks the previous week's rate is carried forward.
+  - Fixed taxes (excise + other per-litre taxes): always from the prices, price with tax / (1 + VAT) - price without tax. The sheet values are kept as `*_sheet` columns for reference.
+  - Tax change: VAT changed, or fixed taxes moved by more than 1% in a week (95% of weekly noise is below 0.1%).
+  - Every run prints the periods where the sheets disagree with the prices.
+- **Result:** Poland's 2026 VAT now reads 23% until end of March, 8% from the first April bulletin to end of June, 23% in July to mid-August, 8% for 17-31 August, 23% from September, matching the announced CPN dates. `interventions.csv` keeps its role (non-tax measures only); the tolerances are in `config.yaml` under `build`.

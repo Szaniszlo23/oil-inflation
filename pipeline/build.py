@@ -11,7 +11,9 @@ Conversions (see docs/decisions.md):
     ECB reference rate of the same day (D4: this is the rate the bulletin itself uses)
   - Brent: USD per barrel -> local currency per litre, daily, then per bulletin week
     (same day and previous-week average) and per month
-  - Taxes: VAT, excise and other indirect taxes from the bulletin's own tax sheets (D7)
+  - Taxes: VAT, excise and other indirect taxes from the bulletin's own tax sheets (D7),
+    checked against the bulletin's prices; where they disagree, the rates embedded in
+    the prices are used and the periods are reported (D17)
   - Policy flags: price caps, subsidies etc. from interventions.csv
 
 Units: "lcu" = local currency (PLN, RON, HUF); all prices and taxes are per litre.
@@ -132,6 +134,54 @@ def tax_on_dates(steps, country, fuel, dates):
     return asof(s.set_index("since")["value"], dates)["value"]
 
 
+def effective_taxes(g, valid_vat, b):
+    """Tax rates as embedded in the bulletin's own prices (decisions D17).
+
+    The price sheets are internally consistent, but the dates in the VAT and excise
+    sheets are sometimes wrong. So:
+      - VAT: the sheet rate, unless the prices clearly imply a different legal rate
+        (gap > vat_mismatch_pp and the implied rate within vat_snap_pp of a rate the
+        country has used); then that rate. If they disagree but no legal rate fits
+        (e.g. a transition week), the previous week's rate is carried forward.
+      - fixed_taxes_lcu (excise + other per-litre taxes): always from the prices,
+        price with tax / (1 + VAT) - price without tax.
+      - tax_change: VAT changed, or fixed taxes moved by more than tax_change_threshold_pct.
+    """
+    fixed_sheet = g.excise_lcu_sheet + g.other_taxes_lcu_sheet.fillna(0)
+    implied_vat = (g.price_with_tax_lcu / (g.price_pre_tax_lcu + fixed_sheet) - 1) * 100
+    nearest = implied_vat.apply(lambda v: min(valid_vat, key=lambda r: abs(r - v)) if pd.notna(v) else np.nan)
+    mismatch = (implied_vat - g.vat_pct_sheet).abs() > b["vat_mismatch_pp"]
+    snaps = (implied_vat - nearest).abs() <= b["vat_snap_pp"]
+    use_implied = mismatch & snaps
+    # sheet consistent -> sheet rate; clear mismatch -> the legal rate the prices imply;
+    # unclear mismatch (e.g. a transition week) -> carry the previous week's rate forward
+    vat = g.vat_pct_sheet.where(~mismatch, np.nan).where(~use_implied, nearest)
+    g["vat_pct"] = vat.ffill().fillna(g.vat_pct_sheet)
+    g["fixed_taxes_lcu"] = g.price_with_tax_lcu / (1 + g.vat_pct / 100) - g.price_pre_tax_lcu
+
+    fixed_gap = (g.fixed_taxes_lcu / fixed_sheet - 1).abs() * 100
+    g["tax_sheet_mismatch"] = mismatch | (fixed_gap > b["fixed_tax_mismatch_pct"])
+
+    vat_changed = g.vat_pct.ne(g.vat_pct.shift()) & g.vat_pct.shift().notna()
+    fixed_moved = (g.fixed_taxes_lcu.pct_change().abs() * 100) > b["tax_change_threshold_pct"]
+    g["tax_change"] = vat_changed | fixed_moved
+    return g
+
+
+def report_tax_mismatches(weekly):
+    """Print the periods where the bulletin's tax sheets disagree with its prices."""
+    bad = weekly[weekly.tax_sheet_mismatch].sort_values(["country", "fuel", "date"])
+    if bad.empty:
+        print("    tax sheets consistent with prices everywhere")
+        return
+    print("    tax sheets disagree with prices (rates taken from the prices instead, decisions D17):")
+    for (ctr, fuel), g in bad.groupby(["country", "fuel"]):
+        runs = (g.date.diff().dt.days > 21).cumsum()
+        spans = [f"{r.date.min():%Y-%m-%d}..{r.date.max():%Y-%m-%d}" if len(r) > 1 else f"{r.date.min():%Y-%m-%d}"
+                 for _, r in g.groupby(runs)]
+        print(f"      {ctr} {fuel}: {len(g)} weeks - " + ", ".join(spans))
+
+
 def load_interventions():
     cols = ["country", "fuel", "measure", "start", "end", "size", "unit", "source"]
     path = utils.INTERVENTIONS_PATH
@@ -191,12 +241,11 @@ def build_fuel_weekly(snap, cfg, fx, brent, iv):
         g["price_pre_tax_lcu"] = g.price_pre_tax_eur * g.lcu_per_eur
         g["taxes_total_lcu"] = g.price_with_tax_lcu - g.price_pre_tax_lcu
 
-        g["vat_pct"] = tax_on_dates(taxes["vat"], ctr, fuel, dates).values
-        g["excise_lcu"] = tax_on_dates(taxes["excise"], ctr, fuel, dates).values / utils.LITRES_PER_KL
-        g["other_taxes_lcu"] = tax_on_dates(taxes["other_taxes"], ctr, fuel, dates).values / utils.LITRES_PER_KL
-        tax_cols = ["vat_pct", "excise_lcu", "other_taxes_lcu"]
-        changed = (g[tax_cols].ne(g[tax_cols].shift()) & g[tax_cols].notna() & g[tax_cols].shift().notna())
-        g["tax_change"] = changed.any(axis=1)
+        g["vat_pct_sheet"] = tax_on_dates(taxes["vat"], ctr, fuel, dates).values
+        g["excise_lcu_sheet"] = tax_on_dates(taxes["excise"], ctr, fuel, dates).values / utils.LITRES_PER_KL
+        g["other_taxes_lcu_sheet"] = tax_on_dates(taxes["other_taxes"], ctr, fuel, dates).values / utils.LITRES_PER_KL
+        valid_vat = sorted(taxes["vat"].loc[taxes["vat"].country == ctr, "value"].unique())
+        g = effective_taxes(g, valid_vat, cfg["build"])
 
         daily = brent_lcu_per_litre(brent, fx, cur)
         g["brent_usd_same_day"] = asof(brent, dates)["value"].values
@@ -296,10 +345,10 @@ def check(weekly, monthly, cfg):
 
     # D4: the exchange rate implied by the bulletin's own taxes should equal the ECB rate
     w = weekly[(weekly.date >= b["implied_fx_check_from"])].dropna(
-        subset=["vat_pct", "excise_lcu", "price_with_tax_eur", "price_pre_tax_eur"])
+        subset=["vat_pct_sheet", "excise_lcu_sheet", "price_with_tax_eur", "price_pre_tax_eur"])
     for ctr, g in w.groupby("country"):
-        taxes_lcu = g.excise_lcu + g.other_taxes_lcu.fillna(0)
-        taxes_eur = g.price_with_tax_eur / (1 + g.vat_pct / 100) - g.price_pre_tax_eur
+        taxes_lcu = g.excise_lcu_sheet + g.other_taxes_lcu_sheet.fillna(0)
+        taxes_eur = g.price_with_tax_eur / (1 + g.vat_pct_sheet / 100) - g.price_pre_tax_eur
         diff_pct = ((taxes_lcu / taxes_eur) / g.lcu_per_eur - 1).abs().median() * 100
         if diff_pct > b["implied_fx_tolerance_pct"]:
             problems.append(f"{ctr}: bulletin's implied exchange rate differs from ECB by {diff_pct:.2f}% (median)")
@@ -320,12 +369,13 @@ def run(cfg):
     print(f"    using snapshot {snap.name}")
 
     fx = load_fx(snap)
-    brent = load_brent(snap, cfg)   
+    brent = load_brent(snap, cfg)
     iv = load_interventions()
 
     weekly = build_fuel_weekly(snap, cfg, fx, brent, iv)
     monthly = build_hicp_monthly(snap, cfg, fx, brent, iv, weekly)
     check(weekly, monthly, cfg)
+    report_tax_mismatches(weekly)
 
     utils.DATA_PROCESSED.mkdir(parents=True, exist_ok=True)
     weekly.to_parquet(utils.DATA_PROCESSED / "fuel_weekly.parquet", index=False)
