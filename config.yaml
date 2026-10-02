@@ -54,10 +54,10 @@ series:
     source: eurostat
     dataset: sts_inpr_m           # production in industry, monthly
     geo: EA20
-    filters: {indic_bt: PRD, nace_r2: B-D, s_adj: SCA, unit: I21}   # fetch.py checks each code against Eurostat's list
+    filters: {indic_bt: PRD, nace_r2: B-D, s_adj: SCA, unit: I21}   # checked against Eurostat's code list on download
     frequency: monthly
     start: "2000-01"
-    verified: false
+    verified: true
 
   oil_bulletin:
     source: ec_oil_bulletin
@@ -134,3 +134,15 @@ stage2:
   demand_control_components: [headline, core]          # control for euro-area industrial production
   min_policy_months: 12             # fewer months with a non-tax measure: no interaction, level control only
   sanity: {max_gap_normal_vs_exclude_pp: 0.3}          # per 10% oil rise, headline and fuels
+
+charts:
+  context_start: "2019-01-01"       # first date shown in the context and pump-price charts
+  main_policy_type: {PL: hard_cap, RO: margin_cap, HU: hard_cap}   # measure shown per country in chart 04
+  policy_chart_range: [-0.25, 2.0]  # x-axis of chart 04; wider bands are clipped (and noted)
+  policy_start: "2021-07-01"        # first date shown in chart 11 (effect on headline inflation)
+  recent_episodes_start: "2026-01-01"   # chart 09 shows episodes starting from this date
+  hungary_episode_start: "2021-11-15"   # chart 10: first week of Hungary's 2021-22 cap
+
+policy:
+  after_weeks: 8                    # counterfactual continues this long after each episode ends (catch-up)
+  tax_baseline_weeks_before: 4      # "taxes as before" = taxes this many weeks before the episode started
