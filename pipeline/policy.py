@@ -8,6 +8,10 @@ Hungary's post-cap window), per country and fuel:
      and weekly dynamics, estimated on market weeks only) is started from the actual
      pre-tax price in the week before the episode and fed the actual Brent path, week by
      week, until `after_weeks` weeks after the episode ends.
+     The model is estimated on `policy.model_sample` (default main). A crude-only model has no
+     refining margins, so after 2020 the counterfactual misses their rise: positive 'after_...'
+     effects in 2026 are mostly crack spreads, not policy. (Estimating on pre2020 makes this
+     worse: it under-predicts every post-2020 price.)
   2. Two counterfactual pump prices:
        market  counterfactual pre-tax price + the taxes actually charged
                -> isolates the cap / margin cap / discount
@@ -18,7 +22,16 @@ Hungary's post-cap window), per country and fuel:
      so the gap becomes counterfactual fuel inflation and, with the fuel weight, a direct
      effect on headline inflation (pp). Second-round effects are not included.
 
-Writes outputs/results/policy_counterfactual.csv (long format, `level` = weekly / monthly).
+Cross-check without a model (`policy.crosscheck` in config.yaml): the treated country's pre-tax
+margin over crude (EUR/l) minus the average margin of control countries, relative to a baseline
+window before the measure. Control-country weeks with their own measure in force (or within
+`exclude_after_weeks` after one) are left out, e.g. Orlen's pre-election pricing in Poland in 2023.
+Valid for Hungary 2021-23 with Poland and Romania as controls: their 2022 measures were tax cuts
+(not in the pre-tax price) and a discount not reported to the Oil Bulletin. Not valid for 2026,
+when all three countries intervened.
+
+Writes outputs/results/policy_counterfactual.csv (long format, `level` = weekly / monthly)
+and outputs/results/policy_crosscheck.csv (monthly).
 """
 import numpy as np
 import pandas as pd
@@ -50,11 +63,12 @@ def episodes(g, types):
 
 # --- Counterfactual simulation ---------------------------------------------------------------------
 
-def simulate(g, s, lr, sr, p, q, start, stop):
-    """Pre-tax price path from week `start` to `stop` under normal-times dynamics, actual Brent."""
+def simulate(g, s, lr, sr, p, q, start, stop, trend_offset=0):
+    """Pre-tax price path from week `start` to `stop` under normal-times dynamics, actual Brent.
+    trend_offset: weeks between the start of the model's estimation sample and the start of g."""
     y = g[s["y"]].to_numpy(dtype=float)
     x = g[s["x"]].to_numpy(dtype=float)
-    trend = np.arange(len(g)) / 52.0
+    trend = (np.arange(len(g)) + trend_offset) / 52.0
     target = lr.params["const"] + lr.params["trend"] * trend + lr.params["x"] * x
     dx = np.r_[np.nan, np.diff(x)]
     cf = y.copy()
@@ -71,7 +85,16 @@ def simulate(g, s, lr, sr, p, q, start, stop):
     return out
 
 
-def weekly_counterfactuals(cfg, weekly, s1):
+def normal_times_model(g_all, s, model_sample, p, q):
+    """Stage 1 normal-times model (long run + weekly dynamics) estimated on clean weeks of a sample."""
+    g_est = sample_slice(g_all, s["samples"][model_sample])
+    _, clean = masks(g_est, s)
+    lr, gap = long_run(g_est, s, clean, trend=True)
+    sr = fit_ecm(ecm_frame(g_est, gap, s, p, q, "exclude"), clean, s)
+    return lr, sr, g_est.index[0]
+
+
+def weekly_counterfactuals(cfg, weekly, s1, model_sample):
     s, ps = cfg["stage1"], cfg["policy"]
     types = s["interaction_types"] + s["level_only_types"]
     rows = []
@@ -82,21 +105,20 @@ def weekly_counterfactuals(cfg, weekly, s1):
             lags = s1[(s1.country == ctr) & (s1.fuel == fuel)][["p_lags", "q_lags"]].iloc[0]
             p, q = int(lags.p_lags), int(lags.q_lags)
 
-            _, clean = masks(g, s)                       # the Stage 1 normal-times model
-            lr, gap = long_run(g, s, clean, trend=True)
-            sr = fit_ecm(ecm_frame(g, gap, s, p, q, "exclude"), clean, s)
+            lr, sr, est_start = normal_times_model(g_all, s, model_sample, p, q)
+            offset = int(round((g.index[0] - est_start).days / 7))      # weekly grid
 
             for a, b, name in episodes(g, types):
                 stop = min(b + ps["after_weeks"], len(g) - 1)
-                cf_pre = simulate(g, s, lr, sr, p, q, a, stop)
+                cf_pre = simulate(g, s, lr, sr, p, q, a, stop, trend_offset=offset)
                 pre_week = g.iloc[max(a - ps["tax_baseline_weeks_before"], 0)]   # taxes before the episode
                 for t in range(a, stop + 1):
                     w = g.iloc[t]
                     phase = w.intervention if w.intervention else "after_" + g.iloc[b].intervention.split(";")[-1]
                     market = (cf_pre[t] + w.fixed_taxes_lcu) * (1 + w.vat_pct / 100)
                     full = (cf_pre[t] + pre_week.fixed_taxes_lcu) * (1 + pre_week.vat_pct / 100)
-                    rows.append({"level": "weekly", "country": ctr, "fuel": fuel, "date": g.index[t],
-                                 "episode": name, "phase": phase,
+                    rows.append({"level": "weekly", "model_sample": model_sample, "country": ctr, "fuel": fuel,
+                                 "date": g.index[t], "episode": name, "phase": phase,
                                  "episode_start": g.index[a], "episode_end": g.index[b],
                                  "in_force": t <= b,
                                  "pre_tax_actual": w.price_pre_tax_lcu, "pre_tax_cf": cf_pre[t],
@@ -138,8 +160,49 @@ def monthly_effects(cfg, wk, monthly):
         out = out.loc[min(active) - pd.DateOffset(months=12): max(active) + pd.DateOffset(months=12)]
         out = out.reset_index().rename(columns={"month": "date"})
         out["level"], out["country"], out["fuel"] = "monthly", ctr, "all"
+        out["model_sample"] = wk.model_sample.iloc[0]
         rows.append(out)
     return pd.concat(rows, ignore_index=True)
+
+
+# --- Cross-check: treated country vs. control countries ----------------------------------------------
+
+def crosscheck(cfg, weekly, monthly):
+    """Market effect of a measure from the margin over crude relative to control countries (no model).
+    effect_pct = 100 * (actual retail price / counterfactual - 1), counterfactual = actual + the margin
+    gap (with VAT); the same definition as market_effect_pct in the model counterfactual."""
+    s, cc = cfg["stage1"], cfg["policy"]["crosscheck"]
+    w = weekly.copy()
+    w["margin_eur"] = (w[s["y"]] - w[s["x"]]) / w["lcu_per_eur"]
+    clean = pd.concat([masks(g.sort_values("date").set_index("date"), s)[1].rename("clean").to_frame()
+                       .assign(country=c, fuel=f) for (c, f), g in w.groupby(["country", "fuel"])])
+    w = w.merge(clean.reset_index(), on=["date", "country", "fuel"], how="left")
+    ctrl = (w[w.country.isin(cc["controls"]) & w.clean]
+            .groupby(["date", "fuel"]).margin_eur.mean().rename("control_margin_eur"))
+    t = (w[w.country == cc["country"]].merge(ctrl.reset_index(), on=["date", "fuel"], how="left")
+         .sort_values("date"))
+    t["diff_eur"] = t.margin_eur - t.control_margin_eur
+    base = t[t.date.between(*cc["baseline"])].groupby("fuel").diff_eur.mean()
+    t["gap_eur"] = t.diff_eur - t.fuel.map(base)
+    t["retail_cf"] = t.price_with_tax_lcu - t.gap_eur * t.lcu_per_eur * (1 + t.vat_pct / 100)
+    t["effect_pct"] = 100 * (t.price_with_tax_lcu / t.retail_cf - 1)
+    t = t[t.date.between(*cc["window"])]
+    t["month"] = t.date.dt.to_period("M").dt.to_timestamp()
+    mo = t.pivot_table(index="month", columns="fuel", values=["gap_eur", "effect_pct"])
+    mo.columns = [f"{v}_{f}" for v, f in mo.columns]
+    mo["effect_pct_avg"] = mo[[c for c in mo.columns if c.startswith("effect_pct_")]].mean(axis=1)
+    f = monthly[(monthly.country == cc["country"]) & (monthly.component == "fuels")].set_index("month").sort_index()
+    idx = f["index"]
+    cf_idx = idx / (1 + mo.effect_pct_avg.reindex(idx.index).fillna(0) / 100)   # equal to actual outside the window
+    # direct effect on headline y/y inflation, as in monthly_effects(): includes base effects after the cap
+    yoy = lambda s_: 100 * (s_ / s_.shift(12) - 1)
+    effect = f["weight"] / 1000 * (yoy(idx) - yoy(cf_idx))
+    mo["fuel_weight"] = f["weight"].reindex(mo.index)
+    mo["headline_effect_pp"] = effect.reindex(mo.index)
+    mo = mo.reset_index().rename(columns={"month": "date"})
+    mo["country"], mo["controls"] = cc["country"], "+".join(cc["controls"])
+    mo.to_csv(utils.RESULTS / "policy_crosscheck.csv", index=False)
+    return mo
 
 
 # --- Entry point (called by run.py) ------------------------------------------------------------
@@ -149,15 +212,21 @@ def run(cfg):
     monthly = pd.read_parquet(utils.DATA_PROCESSED / "hicp_monthly.parquet")
     s1 = pd.read_csv(utils.RESULTS / "stage1_passthrough.csv")
     s1 = s1[(s1["sample"] == "main") & (s1.spec == "baseline") & (s1.policy_handling == "interactions")]
+    model_sample = cfg["policy"].get("model_sample", "main")
 
-    wk = weekly_counterfactuals(cfg, weekly, s1)
+    wk = weekly_counterfactuals(cfg, weekly, s1, model_sample)
     mo = monthly_effects(cfg, wk, monthly)
-    res = pd.concat([wk, mo], ignore_index=True)
-    res.to_csv(utils.RESULTS / "policy_counterfactual.csv", index=False)
-    summarise(wk, mo, cfg)
+    pd.concat([wk, mo], ignore_index=True).to_csv(utils.RESULTS / "policy_counterfactual.csv", index=False)
+    summarise(wk, mo, cfg, "policy_counterfactual.csv")
+
+    if "crosscheck" in cfg["policy"]:
+        cc = crosscheck(cfg, weekly, monthly)
+        summarise_crosscheck(cc, mo, cfg)
+    else:
+        print("    note: no policy.crosscheck in config.yaml - cross-check skipped")
 
 
-def summarise(wk, mo, cfg):
+def summarise(wk, mo, cfg, fname):
     print("\n    Effect on pump prices by measure (average of petrol and diesel, % vs. counterfactual):")
     print(f"    {'':4s}{'measure (phase)':34s}{'weeks':>6s}{'market avg':>11s}{'market peak':>12s}{'taxes avg':>11s}")
     for (ctr, phase), d in wk.groupby(["country", "phase"], sort=False):
@@ -176,5 +245,24 @@ def summarise(wk, mo, cfg):
             r = d.loc[i]
             print(f"    {ctr} {label:8s}{r.headline_effect_full_pp:6.2f} pp in {r.date:%Y-%m} "
                   f"(market measures {r.headline_effect_market_pp:5.2f}, "
-                  f"taxes {r.headline_effect_full_pp - r.headline_effect_market_pp:5.2f})")
-    print("\n    Saved outputs/results/policy_counterfactual.csv")
+                  f"taxes {r.headline_effect_full_pp - r.headline_effect_market_pp:5.2f}; "
+                  f"fuel weight {r.fuel_weight:.1f}, fuel inflation actual {r.fuels_yoy_actual:.1f}% "
+                  f"vs counterfactual {r.fuels_yoy_cf_full:.1f}%)")
+    print(f"\n    Saved outputs/results/{fname}")
+
+
+def summarise_crosscheck(cc, mo, cfg):
+    c = cfg["policy"]["crosscheck"]
+    m = mo[mo.country == c["country"]].set_index(pd.to_datetime(mo[mo.country == c["country"]].date))
+    print(f"\n    Cross-check, {c['country']} vs. {'+'.join(c['controls'])} (margin over crude, baseline "
+          f"{c['baseline'][0]} to {c['baseline'][1]}): pump price vs. counterfactual, %, monthly")
+    print(f"    {'month':10s}{'petrol':>9s}{'diesel':>9s}{'avg':>8s}{'model avg':>11s}{'headline y/y, pp':>18s}")
+    for _, r in cc.iterrows():
+        d = pd.Timestamp(r.date)
+        model = m["price_level_gap_market_pct"].get(d, np.nan)
+        if d.month % 3 == 0:
+            print(f"    {d:%Y-%m}   {r.get('effect_pct_petrol', np.nan):9.1f}{r.get('effect_pct_diesel', np.nan):9.1f}"
+                  f"{r.effect_pct_avg:8.1f}{model:11.1f}{r.headline_effect_pp:18.2f}")
+    print("    (model avg = Stage 1 counterfactual, same definition; headline y/y = direct effect, cross-check;"
+          " quarterly rows shown)")
+    print("    Saved outputs/results/policy_crosscheck.csv")

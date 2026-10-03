@@ -137,7 +137,7 @@ stage2:
 
 charts:
   context_start: "2019-01-01"       # first date shown in the context and pump-price charts
-  main_policy_type: {PL: hard_cap, RO: margin_cap, HU: hard_cap}   # measure shown per country in chart 04
+  main_policy_type: {PL: margin_cap, RO: margin_cap, HU: hard_cap}   # measure shown per country in chart 04 (PL: maximum prices are margin-based)
   policy_chart_range: [-0.25, 2.0]  # x-axis of chart 04; wider bands are clipped (and noted)
   policy_start: "2021-07-01"        # first date shown in chart 11 (effect on headline inflation)
   recent_episodes_start: "2026-01-01"   # chart 09 shows episodes starting from this date
@@ -146,3 +146,9 @@ charts:
 policy:
   after_weeks: 8                    # counterfactual continues this long after each episode ends (catch-up)
   tax_baseline_weeks_before: 4      # "taxes as before" = taxes this many weeks before the episode started
+  model_sample: main                # stage1 sample of the normal-times model behind the counterfactual
+  crosscheck:                       # no-model check: treated country's margin over crude vs. control countries
+    country: HU
+    controls: [PL, RO]              # their 2021-22 measures were tax cuts (PL) and a discount not in the bulletin (RO)
+    baseline: ["2021-05-01", "2021-10-31"]   # before Hungary's cap (from 2021-11-15)
+    window: ["2021-07-01", "2023-12-31"]     # cap, post-cap window to Sep 2023, and the months after

@@ -16,7 +16,12 @@ Writes outputs/figures/:
   09_counterfactual_2026          2026 interventions: actual vs. counterfactual pump prices
   10_counterfactual_hungary_2021  Hungary's 2021-22 cap and the post-cap premium
   11_counterfactual_inflation     direct effect of the interventions on headline inflation
+  12_crosscheck_hungary_2021      Hungary's cap without a model: margin vs. Poland and Romania
 and outputs/tables/country_comparison.csv, policy_episodes.csv.
+
+Stage 1 headline numbers (chart 03, comparison table) use the 2008-2019 sample, where crude and
+pre-tax prices are cointegrated (stage1_diagnostics.csv); 2008-2026 enters through the model in
+differences, which does not need cointegration.
 """
 import matplotlib
 
@@ -67,8 +72,8 @@ def shade_policy(ax, iv, ctr, fuel=None, start=None, strip=False):
         first = False
 
 
-def s1_main(s1, version="interactions"):
-    return s1[(s1["sample"] == "main") & (s1.spec == "baseline") & (s1.policy_handling == version)]
+def s1_main(s1, version="interactions", sample="main"):
+    return s1[(s1["sample"] == sample) & (s1.spec == "baseline") & (s1.policy_handling == version)]
 
 
 def s2_main(s2):
@@ -113,16 +118,20 @@ def fig_pump_price(cfg, weekly, iv, start):
     save(fig, "02_pump_price", "Red strip: price caps, maximum prices, margin caps, discounts and Hungary's post-cap window.")
 
 
-def fig_crude_to_pump(cfg, s1):
-    m = s1_main(s1)
+def fig_crude_to_pump(cfg, s1, s1d):
+    m = s1_main(s1, sample="pre2020")
+    dl = s1d[(s1d.test == "dl_cumulative") & (s1d["sample"] == "main")]
     fig, axes = plt.subplots(1, 3, figsize=(12, 3.8), sharey=True)
     for ax, ctr in zip(axes, cfg["countries"]):
         for fuel in cfg["stage1"]["fuels"]:
             d = m[(m.country == ctr) & (m.fuel == fuel) & (m.regime == "normal") & (m.measure == "cumulative")
                   & (m.horizon <= 12)].sort_values("horizon")
             ax.plot(d.horizon, d.estimate, FUEL_STYLE(fuel), color=C[ctr], lw=2, marker="o", ms=4,
-                    label=fuel.capitalize())
+                    label=f"{fuel.capitalize()}, 2008-19")
             ax.fill_between(d.horizon, d.lower, d.upper, color=C[ctr], alpha=0.12, lw=0)
+            r = dl[(dl.country == ctr) & (dl.fuel == fuel)].sort_values("horizon")
+            ax.plot(r.horizon, r.statistic, ls="none", marker="x" if fuel == "petrol" else "+", ms=7,
+                    color="black", label=f"{fuel.capitalize()}, 2008-26 (differences)")
         ax.axhline(1, color=COLORS["grey"], lw=0.8, ls=":")
         ax.set_title(NAMES[ctr])
         ax.set_xlabel("weeks after the crude price move")
@@ -130,7 +139,8 @@ def fig_crude_to_pump(cfg, s1):
     axes[0].set_ylabel("pass-through (1 = one-for-one)")
     fig.suptitle("Pre-tax pump price response to a 1-unit move in crude (local currency per litre), normal times",
                  x=0.01, ha="left", fontweight="bold")
-    save(fig, "03_crude_to_pump", "Stage 1 error-correction model, 2008-2026, 95% bands. Dotted line: one-for-one.")
+    save(fig, "03_crude_to_pump", "Lines: Stage 1 error-correction model, 2008-2019 (cointegrated), 95% bands. "
+         "Markers: distributed lag in differences, 2008-2026 (no cointegration needed). Dotted line: one-for-one.")
 
 
 def FUEL_STYLE(fuel):
@@ -300,7 +310,8 @@ def fig_counterfactual_prices(cfg, pol):
     w["episode_start"] = pd.to_datetime(w["episode_start"])
     recent = pd.Timestamp(cfg["charts"]["recent_episodes_start"])
     note = ("Counterfactual: Stage 1 normal-times model run on the actual Brent path from the week before each "
-            "measure. Shaded: measure in force.")
+            "measure. Shaded: measure in force. Crude-only model: in 2026 the gap also contains changes in "
+            "refining margins, so market effects are indicative.")
 
     fig, axes = plt.subplots(1, 3, figsize=(13, 4))
     for ax, ctr in zip(axes, cfg["countries"]):
@@ -356,6 +367,37 @@ def fig_counterfactual_inflation(cfg, pol):
          "includes base effects after a measure ends.")
 
 
+def fig_crosscheck(cfg, cc, pol, iv):
+    """Hungary 2021-23 without a model: margin over crude vs. control countries, and the model for comparison."""
+    c = cfg["policy"]["crosscheck"]
+    cc = cc.assign(date=pd.to_datetime(cc.date)).set_index("date")
+    mo = pol[(pol.level == "monthly") & (pol.country == c["country"])].assign(date=lambda d: pd.to_datetime(d.date))
+    mo = mo.set_index("date").reindex(cc.index)
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(12, 4))
+    for a in (a1, a2):
+        shade_policy(a, iv, c["country"], start=cc.index.min())
+        a.axhline(0, color=COLORS["grey"], lw=0.8)
+        a.set_xlim(cc.index.min(), cc.index.max() + pd.DateOffset(months=1))
+        a.xaxis.set_major_formatter(mdates.DateFormatter("%b %y"))
+    for fuel in cfg["stage1"]["fuels"]:
+        a1.plot(cc.index, cc[f"effect_pct_{fuel}"], FUEL_STYLE(fuel), color=C[c["country"]], lw=2,
+                label=f"{fuel.capitalize()}, vs. {' and '.join(NAMES[k] for k in c['controls'])}")
+    a1.plot(cc.index, mo["price_level_gap_market_pct"], color="black", lw=1.2, ls=":",
+            label="Model counterfactual (avg of fuels)")
+    a1.set_title("Pump price vs. counterfactual, %")
+    a1.legend(loc="lower left", fontsize=7.5)
+    a2.plot(cc.index, cc["headline_effect_pp"], color=C[c["country"]], lw=2, label="Cross-check")
+    a2.plot(cc.index, mo["headline_effect_market_pp"], color="black", lw=1.2, ls=":", label="Model counterfactual")
+    a2.set_title("Direct effect on headline HICP inflation (y/y), pp")
+    a2.legend(loc="lower left", fontsize=7.5)
+    fig.suptitle(f"{NAMES[c['country']]}'s fuel price cap without a model: two methods, same story",
+                 x=0.01, ha="left", fontweight="bold")
+    save(fig, "12_crosscheck_hungary_2021",
+         f"Cross-check: change in {NAMES[c['country']]}'s pre-tax margin over crude relative to the average of "
+         f"{' and '.join(NAMES[k] for k in c['controls'])} (their weeks with own measures left out), baseline "
+         f"{c['baseline'][0][:7]} to {c['baseline'][1][:7]}. Shaded: cap and post-cap window. Market measures only.")
+
+
 def policy_table(pol):
     w = pol[pol.level == "weekly"]
     rows = []
@@ -375,19 +417,29 @@ def policy_table(pol):
 
 # --- Table ---------------------------------------------------------------------------------------
 
-def country_table(cfg, weekly, monthly, s1, s2):
-    m1, m2 = s1_main(s1), s2_main(s2)
+def country_table(cfg, weekly, monthly, s1, s2, s1d):
+    m1, m1_main, m2 = s1_main(s1, sample="pre2020"), s1_main(s1), s2_main(s2)
+    dl = s1d[(s1d.test == "dl_cumulative") & (s1d["sample"] == "main") & (s1d.horizon == 4)]
     rows = []
     for ctr in cfg["countries"]:
         w = weekly[(weekly.country == ctr) & (~weekly.in_intervention)].sort_values("date")
         recent = w[w.date >= w.date.max() - pd.Timedelta(weeks=52)]
         latest = monthly[(monthly.country == ctr) & (monthly.month == monthly.month.max())].set_index("component")
 
-        def s1v(measure, h=None, fuel=None):
-            d = m1[(m1.country == ctr) & (m1.regime == "normal") & (m1.measure == measure)]
+        def s1v(measure, h=None, fuel=None, src=m1):
+            d = src[(src.country == ctr) & (src.regime == "normal") & (src.measure == measure)]
             d = d[d.horizon == h] if h is not None else d
             d = d[d.fuel == fuel] if fuel else d
             return d.estimate.mean()
+
+        def elasticity_now():
+            """Pre-2020 pass-through with today's price structure: retail elasticity is long-run pass-through
+            x crude share of the retail price, so rescale the main-sample elasticity by the ratio of the betas."""
+            vals = []
+            for fuel in cfg["stage1"]["fuels"]:
+                vals.append(s1v("retail_elasticity", fuel=fuel, src=m1_main)
+                            * s1v("long_run", fuel=fuel) / s1v("long_run", fuel=fuel, src=m1_main))
+            return np.mean(vals)
 
         def s2v(comp, h, measure="response"):
             d = m2 if measure == "response" else s2[(s2["sample"] == "main") & (s2.component == comp)]
@@ -400,10 +452,13 @@ def country_table(cfg, weekly, monthly, s1, s2):
             "fuel weight in HICP, per mille (latest)": latest.loc["fuels", "weight"],
             "taxes, % of petrol price (last 52 weeks)": 100 * (recent[recent.fuel == "petrol"].eval(
                 "(price_with_tax_lcu - price_pre_tax_lcu) / price_with_tax_lcu")).mean(),
-            "pre-tax pass-through after 4 weeks, petrol": s1v("cumulative", 4, "petrol"),
-            "pre-tax pass-through after 4 weeks, diesel": s1v("cumulative", 4, "diesel"),
-            "weeks to 50% of long-run effect (avg of fuels)": s1v("weeks_to_50pct"),
-            "retail-price elasticity (avg of fuels)": s1v("retail_elasticity"),
+            "long-run pre-tax pass-through, 2008-19 (avg of fuels)": s1v("long_run"),
+            "pre-tax pass-through after 4 weeks, petrol, 2008-19": s1v("cumulative", 4, "petrol"),
+            "pre-tax pass-through after 4 weeks, diesel, 2008-19": s1v("cumulative", 4, "diesel"),
+            "pre-tax pass-through after 4 weeks, avg of fuels, 2008-26 (differences)":
+                dl[dl.country == ctr].statistic.mean(),
+            "weeks to 90% of long-run effect, 2008-19 (avg of fuels)": s1v("weeks_to_90pct"),
+            "retail-price elasticity, 2008-19 pass-through at today's prices (avg of fuels)": elasticity_now(),
             "HICP fuels after 2 months, % per 10% oil": s2v("fuels", 2),
             "headline after 3 months, % per 10% oil": s2v("headline", 3),
             "headline after 12 months, % per 10% oil": s2v("headline", 12),
@@ -428,12 +483,13 @@ def run(cfg):
     monthly = pd.read_parquet(utils.DATA_PROCESSED / "hicp_monthly.parquet")
     s1 = pd.read_csv(utils.RESULTS / "stage1_passthrough.csv")
     s2 = pd.read_csv(utils.RESULTS / "stage2_responses.csv")
+    s1d = pd.read_csv(utils.RESULTS / "stage1_diagnostics.csv")
     iv = load_interventions(cfg)
     start = cfg["charts"]["context_start"]
 
     fig_context(cfg, monthly, start)
     fig_pump_price(cfg, weekly, iv, start)
-    fig_crude_to_pump(cfg, s1)
+    fig_crude_to_pump(cfg, s1, s1d)
     fig_policy_stage1(cfg, s1)
     fig_headline(cfg, s2)
     fig_components(cfg, s2)
@@ -445,7 +501,10 @@ def run(cfg):
         fig_counterfactual_prices(cfg, pol)
         fig_counterfactual_inflation(cfg, pol)
         policy_table(pol)
+        cc_path = utils.RESULTS / "policy_crosscheck.csv"
+        if cc_path.exists():
+            fig_crosscheck(cfg, pd.read_csv(cc_path), pol, iv)
     else:
         print("    note: outputs/results/policy_counterfactual.csv not found - charts 09-11 skipped "
               "(run: python run.py --from policy)")
-    print(country_table(cfg, weekly, monthly, s1, s2).to_string())
+    print(country_table(cfg, weekly, monthly, s1, s2, s1d).to_string())

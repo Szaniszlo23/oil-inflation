@@ -29,12 +29,26 @@ Reports long-run pass-through, speed, weeks to 50% and 90% of the long-run effec
 impact and cumulative pass-through
 by week (normal times and under each policy type), the retail-price elasticity,
 and diagnostics. Writes outputs/results/stage1_passthrough.csv (long format).
+
+Diagnostics - is there a long-run link? (per country x fuel, samples pre2020 and main, clean weeks):
+  margin tests    m_t = y_t - x_t (beta fixed at 1, theory: pre-tax = crude + margins);
+                  ADF (const; const+trend; H0 unit root), KPSS (const; H0 stationary)
+  Engle-Granger   static OLS residuals, const and const+trend, all clean weeks (H0 no cointegration)
+  ARDL bounds     Pesaran-Shin-Smith case 3, H0 no levels relationship; valid if y, x are I(0) or I(1)
+  DL differences  dy_t = c + sum_{j=0..H} b_j dx_{t-j} + e_t, no error-correction term, so it needs
+                  no cointegration; cumulative pass-through at each horizon = sum b_0..b_h.
+                  Only weeks whose whole window t-H-1..t is clean.
+Writes outputs/results/stage1_diagnostics.csv (long format).
 """
+import warnings
+
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 from statsmodels.stats.diagnostic import acorr_ljungbox
-from statsmodels.tsa.stattools import coint
+from statsmodels.tools.sm_exceptions import InterpolationWarning
+from statsmodels.tsa.ardl import UECM, ardl_select_order
+from statsmodels.tsa.stattools import adfuller, coint, kpss
 
 from pipeline import utils
 
@@ -287,13 +301,111 @@ def estimate(g, s, version, p, q, rng, trend=True, drop_interpolated=False):
     return out
 
 
+# --- Diagnostics: is there a long-run link? ---------------------------------------------------
+
+def _plain(fn, *args, **kw):
+    """Plain-tuple output on every statsmodels version (0.15 warns without result_object)."""
+    try:
+        return fn(*args, result_object=False, **kw)
+    except TypeError:                                     # older versions: no such argument
+        return fn(*args, **kw)
+
+
+def margin_tests(margin):
+    """Stationarity of the margin y - x (beta fixed at 1)."""
+    m = margin.dropna().to_numpy()
+    out = []
+    for reg in ("c", "ct"):
+        stat, pv, *_ = _plain(adfuller, m, regression=reg, autolag="AIC")
+        out.append({"test": f"margin_adf_{reg}", "statistic": stat, "p_value": pv, "h0": "unit root"})
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", InterpolationWarning)   # KPSS p-values are capped at 0.01-0.10
+        for reg in ("c", "ct"):
+            stat, pv, *_ = _plain(kpss, m, regression=reg, nlags="auto")
+            out.append({"test": f"margin_kpss_{reg}", "statistic": stat, "p_value": pv, "h0": "stationary"})
+    return out
+
+
+def engle_granger(y, x):
+    out = []
+    for trend in ("c", "ct"):
+        stat, pv, _ = coint(y.to_numpy(), x.to_numpy(), trend=trend)
+        out.append({"test": f"engle_granger_{trend}", "statistic": stat, "p_value": pv,
+                    "h0": "no cointegration"})
+    return out
+
+
+def bounds_test(y, x, max_lag):
+    """ARDL bounds test, case 3 (unrestricted constant, no trend). Lags by AIC, at least 1 each."""
+    y = y.rename("y").reset_index(drop=True)
+    X = x.rename("x").reset_index(drop=True).to_frame()
+    sel = ardl_select_order(y, max_lag, X, max_lag, trend="c", ic="aic")
+    p = max(len(sel.model.ar_lags or []), 1)
+    q = max((sel.model.dl_lags.get("x") or [0])[-1], 1)
+    res = UECM(y, p, X, q, trend="c").fit()
+    bt = res.bounds_test(case=3)
+    stat = getattr(bt, "statistic", getattr(bt, "stat", np.nan))      # name differs by version
+    pv = getattr(bt, "pvalue", getattr(bt, "p_values", None))
+    return [{"test": "ardl_bounds_case3", "statistic": stat,
+             "p_value": pv["upper"],                      # conservative: I(1) bound
+             "p_value_lower_bound": pv["lower"], "h0": "no levels relationship",
+             "long_run": -res.params["x.L1"] / res.params["y.L1"], "lags": f"p={p},q={q}"}]
+
+
+def dl_passthrough(y, x, clean, horizons, hac_lags):
+    """Cumulative pass-through from a distributed lag in differences (95% band, as elsewhere)."""
+    H = max(horizons)
+    dy, dx = y.diff(), x.diff()
+    X = pd.concat({f"dx_l{j}": dx.shift(j) for j in range(H + 1)}, axis=1)
+    ok = clean.astype(int).rolling(H + 2).min().eq(1)    # whole lag window clean
+    d = pd.concat([dy.rename("dy"), X], axis=1)[ok].dropna()
+    res = sm.OLS(d["dy"], sm.add_constant(d.drop(columns="dy"))).fit(
+        cov_type="HAC", cov_kwds={"maxlags": hac_lags})
+    out = []
+    for h in horizons:
+        w = np.array([1.0 if c.startswith("dx_l") and int(c[4:]) <= h else 0.0 for c in res.params.index])
+        est = float(w @ res.params.to_numpy())
+        se = float(np.sqrt(w @ res.cov_params().to_numpy() @ w))
+        out.append({"test": "dl_cumulative", "horizon": h, "statistic": est,
+                    "lower": est - 1.96 * se, "upper": est + 1.96 * se})
+    return out
+
+
+def diagnostics(g_all, s):
+    rows = []
+    for name in ("pre2020", "main"):
+        g = sample_slice(g_all, s["samples"][name])
+        _, clean = masks(g, s)
+        y, x = g[s["y"]], g[s["x"]]
+        yc, xc = y[clean], x[clean]
+        meta = {"sample": name, "clean_weeks": int(clean.sum()),
+                "clean_segments": int((clean & ~clean.shift(fill_value=False)).sum())}
+        tests = (margin_tests(yc - xc) + engle_granger(yc, xc) + bounds_test(yc, xc, s["max_lags"])
+                 + dl_passthrough(y, x, clean, s["horizons"], s["hac_lags"]))
+        rows += [{**meta, **t} for t in tests]
+    return rows
+
+
+def summarise_diagnostics(diag):
+    lvl = diag[diag.test != "dl_cumulative"].pivot_table(
+        index=["country", "fuel", "sample"], columns="test", values="p_value").round(3)
+    print("\n    Diagnostics, p-values (clean weeks; margin = pre-tax - crude, beta fixed at 1;"
+          " KPSS H0 = stationary, capped at 0.10):")
+    print("    " + lvl.to_string().replace("\n", "\n    "))
+    dl = diag[(diag.test == "dl_cumulative") & (diag.horizon == 4)].set_index(
+        ["country", "fuel", "sample"])[["statistic", "lower", "upper"]].round(2)
+    print("\n    Pass-through after 4 weeks, distributed lag in differences (no cointegration needed), 95% band:")
+    print("    " + dl.to_string().replace("\n", "\n    "))
+    print(f"\n    Saved {len(diag):,} rows to outputs/results/stage1_diagnostics.csv")
+
+
 # --- Entry point (called by run.py) -------------------------------------------------------------
 
 def run(cfg):
     s = cfg["stage1"]
     rng = np.random.default_rng(s["seed"])
     weekly = pd.read_parquet(utils.DATA_PROCESSED / "fuel_weekly.parquet")
-    results = []
+    results, diag = [], []
 
     for ctr in cfg["countries"]:
         for fuel in s["fuels"]:
@@ -315,12 +427,17 @@ def run(cfg):
                 for r in estimate(g, s, version, p, q, rng, **kw):
                     results.append({"country": ctr, "fuel": fuel, "sample": sample, "spec": spec,
                                     "policy_handling": version, "p_lags": p, "q_lags": q, **r})
+            diag += [{"country": ctr, "fuel": fuel, **r} for r in diagnostics(g_all, s)]
             print(f"    {ctr} {fuel}: lags dy={p}, dx={q}")
 
     res = pd.DataFrame(results)
     utils.RESULTS.mkdir(parents=True, exist_ok=True)
     res.to_csv(utils.RESULTS / "stage1_passthrough.csv", index=False)
     summarise(res, s)
+
+    diag = pd.DataFrame(diag)
+    diag.to_csv(utils.RESULTS / "stage1_diagnostics.csv", index=False)
+    summarise_diagnostics(diag)
 
 
 def summarise(res, s):
