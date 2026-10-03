@@ -3,6 +3,8 @@ fetch.py - download all raw data into data/raw/<YYYY-MM-DD>/.
 
 Sources (codes and URLs come from config.yaml):
   - Brent crude, daily .............. FRED API
+  - EU natural gas price, monthly ... FRED API (IMF Primary Commodity Prices)
+  - HICP at constant tax rates ...... Eurostat Statistics API (JSON-stat)
   - Exchange rates, daily ........... ECB Data Portal API
   - HICP indices and item weights ... Eurostat Statistics API (JSON-stat)
   - Euro-area industrial production . Eurostat Statistics API (JSON-stat)
@@ -91,14 +93,17 @@ class Snapshot:
 # --- Sources -------------------------------------------------------------------
 
 def fetch_fred(snap, cfg):
-    s = cfg["series"]["brent"]
-    params = {
-        "series_id": s["code"],
-        "api_key": utils.get_secret("FRED_API_KEY"),
-        "file_type": "json",
-        "observation_start": s["start"],
-    }
-    snap.save(f"fred_{s['code']}.json", _get(FRED_API, params), "FRED")
+    """Every series in config.yaml with source: fred (Brent, EU gas)."""
+    for s in cfg["series"].values():
+        if s["source"] != "fred":
+            continue
+        params = {
+            "series_id": s["code"],
+            "api_key": utils.get_secret("FRED_API_KEY"),
+            "file_type": "json",
+            "observation_start": s["start"],
+        }
+        snap.save(f"fred_{s['code']}.json", _get(FRED_API, params), "FRED")
 
 
 def fetch_ecb(snap, cfg):
@@ -149,6 +154,16 @@ def fetch_eurostat(snap, cfg):
     snap.save(f"eurostat_{w['dataset']}.json", r, "Eurostat")
 
 
+def fetch_eurostat_ct(snap, cfg):
+    """HICP at constant tax rates: Stage 2 robustness against all indirect-tax changes."""
+    s = cfg["series"]["hicp_constant_tax"]
+    _, body = _eurostat(s["dataset"], {"geo": cfg["countries"], "lastTimePeriod": 1})
+    _check_code(body, "unit", s["unit"], s["dataset"])
+    for geo in cfg["countries"]:
+        r, _ = _eurostat(s["dataset"], {"geo": geo, "unit": s["unit"], "sinceTimePeriod": s["start"]})
+        snap.save(f"eurostat_{s['dataset']}_{geo}.json", r, "Eurostat")
+
+
 def fetch_eurostat_ip(snap, cfg):
     """Euro-area industrial production: global-demand control for Stage 2."""
     s = cfg["series"]["ea_industrial_production"]
@@ -187,9 +202,10 @@ def fetch_oil_bulletin(snap, cfg):
 # --- Entry point (called by run.py) ---------------------------------------------
 
 SOURCES = [
-    ("Brent crude (FRED)", fetch_fred),
+    ("Brent crude and EU gas (FRED)", fetch_fred),
     ("Exchange rates (ECB)", fetch_ecb),
     ("HICP indices and weights (Eurostat)", fetch_eurostat),
+    ("HICP at constant tax rates (Eurostat)", fetch_eurostat_ct),
     ("Euro-area industrial production (Eurostat)", fetch_eurostat_ip),
     ("Pump prices (EC Weekly Oil Bulletin)", fetch_oil_bulletin),
 ]

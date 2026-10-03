@@ -108,8 +108,11 @@ def weekly_counterfactuals(cfg, weekly, s1, model_sample):
             lr, sr, est_start = normal_times_model(g_all, s, model_sample, p, q)
             offset = int(round((g.index[0] - est_start).days / 7))      # weekly grid
 
-            for a, b, name in episodes(g, types):
-                stop = min(b + ps["after_weeks"], len(g) - 1)
+            blocks = episodes(g, types)
+            for i, (a, b, name) in enumerate(blocks):
+                # the after-window stops before the next episode starts (no week simulated twice)
+                next_start = blocks[i + 1][0] if i + 1 < len(blocks) else len(g)
+                stop = min(b + ps["after_weeks"], next_start - 1, len(g) - 1)
                 cf_pre = simulate(g, s, lr, sr, p, q, a, stop, trend_offset=offset)
                 pre_week = g.iloc[max(a - ps["tax_baseline_weeks_before"], 0)]   # taxes before the episode
                 for t in range(a, stop + 1):

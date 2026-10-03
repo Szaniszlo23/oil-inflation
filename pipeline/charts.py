@@ -8,20 +8,24 @@ Writes outputs/figures/:
   01_context            Brent and the contribution of fuels to HICP inflation
   02_pump_price         what makes up the petrol price: crude, margins, taxes
   03_crude_to_pump      Stage 1: cumulative pass-through, normal times
-  04_policy_stage1      Stage 1: normal times vs. a measure in force vs. ignoring policy
+  04_policy_stage1      Stage 1: normal times vs. a measure in force vs. ignoring policy (04b: Hungary only)
   05_headline           Stage 2: headline HICP response
   06_components         Stage 2: component responses after 12 months
-  07_direct_indirect    Stage 2: headline response split into direct and indirect
+  07_direct_indirect    Stage 2: headline response split into contributions (fuels, other energy, food, core)
   08_chain              Brent -> pump price -> HICP fuels after 2 months
   09_counterfactual_2026          2026 interventions: actual vs. counterfactual pump prices
   10_counterfactual_hungary_2021  Hungary's 2021-22 cap and the post-cap premium
   11_counterfactual_inflation     direct effect of the interventions on headline inflation
   12_crosscheck_hungary_2021      Hungary's cap without a model: margin vs. Poland and Romania
+  13_sample_comparison            Stage 2 responses before 2021 vs. the full sample (table)
+  14_petrol_diesel                Stage 2: HICP petrol vs. diesel, with the Stage 1 long-run reference
+  15_country_drivers              why the countries differ: structural drivers next to outcomes (table)
 and outputs/tables/country_comparison.csv, policy_episodes.csv.
 
-Stage 1 headline numbers (chart 03, comparison table) use the 2008-2019 sample, where crude and
-pre-tax prices are cointegrated (stage1_diagnostics.csv); 2008-2026 enters through the model in
-differences, which does not need cointegration.
+Stage 1 headline numbers (chart 03, comparison table) use the 2008-2019 sample, where the long-run
+link between crude and pre-tax prices is clearest (cointegration tests: clear for PL and RO, weaker
+for HU; stage1_diagnostics.csv); 2008-2026 enters through the model in differences, which does not
+need a long-run link and gives the same 4-week pass-through.
 """
 import matplotlib
 
@@ -46,15 +50,21 @@ def check_verified(cfg):
         raise ValueError(f"Series not verified in config.yaml: {bad} - charts are not drawn from unverified data")
 
 
-def save(fig, name, note="", note_y=-0.02):
+def save(fig, name, note="", note_y=-0.02, rect=(0, 0, 1, 0.93)):
     snap = utils.latest_snapshot()
     if fig._suptitle is not None:
-        fig.tight_layout(rect=(0, 0, 1, 0.93))
+        fig.tight_layout(rect=rect)
     text = f"{SOURCE} Data as of {snap.name}." + (f" {note}" if note else "")
     fig.text(0.01, note_y, text, fontsize=7.5, color=COLORS["grey"], ha="left", va="top", wrap=True)
     fig.savefig(utils.FIGURES / f"{name}.png", bbox_inches="tight")
     plt.close(fig)
     print(f"    {name}.png")
+
+
+def note_below(fig, table):
+    """Figure y-position just under a matplotlib table, for the footnote (avoids empty space)."""
+    fig.canvas.draw()
+    return table.get_window_extent().transformed(fig.transFigure.inverted()).y0 - 0.02
 
 
 def shade_policy(ax, iv, ctr, fuel=None, start=None, strip=False):
@@ -113,9 +123,10 @@ def fig_pump_price(cfg, weekly, iv, start):
                      labels=["Crude oil", "Refining and retail margin", "Taxes"], lw=0)
         ax.set_title(f"{NAMES[ctr]}, {cfg['currencies'][ctr]} per litre")
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
-    axes[0].legend(loc="upper left")
     fig.suptitle("Petrol price before and after tax: what it is made of", x=0.01, ha="left", fontweight="bold")
-    save(fig, "02_pump_price", "Red strip: price caps, maximum prices, margin caps, discounts and Hungary's post-cap window.")
+    fig.legend(*axes[0].get_legend_handles_labels(), loc="lower center", ncol=4, bbox_to_anchor=(0.5, 0))
+    save(fig, "02_pump_price", "Red strip: price caps, maximum prices, margin caps, discounts and Hungary's post-cap window.",
+         note_y=-0.01, rect=(0, 0.07, 1, 0.93))
 
 
 def fig_crude_to_pump(cfg, s1, s1d):
@@ -129,30 +140,35 @@ def fig_crude_to_pump(cfg, s1, s1d):
             ax.plot(d.horizon, d.estimate, FUEL_STYLE(fuel), color=C[ctr], lw=2, marker="o", ms=4,
                     label=f"{fuel.capitalize()}, 2008-19")
             ax.fill_between(d.horizon, d.lower, d.upper, color=C[ctr], alpha=0.12, lw=0)
-            r = dl[(dl.country == ctr) & (dl.fuel == fuel)].sort_values("horizon")
+            r = dl[(dl.country == ctr) & (dl.fuel == fuel) & (dl.horizon <= 12)].sort_values("horizon")
             ax.plot(r.horizon, r.statistic, ls="none", marker="x" if fuel == "petrol" else "+", ms=7,
                     color="black", label=f"{fuel.capitalize()}, 2008-26 (differences)")
         ax.axhline(1, color=COLORS["grey"], lw=0.8, ls=":")
+        ax.set_xlim(-0.5, 12.5)
         ax.set_title(NAMES[ctr])
         ax.set_xlabel("weeks after the crude price move")
         ax.legend(loc="lower right")
     axes[0].set_ylabel("pass-through (1 = one-for-one)")
     fig.suptitle("Pre-tax pump price response to a 1-unit move in crude (local currency per litre), normal times",
                  x=0.01, ha="left", fontweight="bold")
-    save(fig, "03_crude_to_pump", "Lines: Stage 1 error-correction model, 2008-2019 (cointegrated), 95% bands. "
-         "Markers: distributed lag in differences, 2008-2026 (no cointegration needed). Dotted line: one-for-one.")
+    save(fig, "03_crude_to_pump", "Lines: Stage 1 error-correction model, 2008-2019 (long-run link clear for Poland "
+         "and Romania, weaker for Hungary), 95% bands. Markers: distributed lag in differences, 2008-2026 (needs no "
+         "long-run link). Dotted line: one-for-one.")
 
 
 def FUEL_STYLE(fuel):
     return utils.FUEL_STYLES[fuel]
 
 
-def fig_policy_stage1(cfg, s1):
-    """Per country and fuel: normal times, the country's main type of measure in force, policy ignored."""
+def fig_policy_stage1(cfg, s1, countries=None, name="04_policy_stage1"):
+    """Per country and fuel: normal times, the country's main type of measure in force, policy ignored.
+    `countries` limits the chart (the Hungary-only version is the one precise enough for the main deck)."""
+    subset = countries is not None
+    countries = countries or cfg["countries"]
     m, ig = s1_main(s1), s1_main(s1, "ignore")
     kinds = [("Normal times", COLORS["crude"]), ("Measure in force", COLORS["accent"]),
              ("Policy ignored", "#A6A6A6")]
-    lo, hi = cfg["charts"]["policy_chart_range"]
+    lo, hi = (0.0, 1.25) if subset else cfg["charts"]["policy_chart_range"]
 
     def get(df, ctr, fuel, regime):
         d = df[(df.country == ctr) & (df.fuel == fuel) & (df.regime == regime)
@@ -160,9 +176,9 @@ def fig_policy_stage1(cfg, s1):
         return d.iloc[0] if len(d) else None
 
     labels, clipped = [], False
-    fig, ax = plt.subplots(figsize=(10, 5))
+    fig, ax = plt.subplots(figsize=(10, 1.1 + 0.65 * len(countries) * len(cfg["stage1"]["fuels"])))
     j = 0
-    for ctr in cfg["countries"]:
+    for ctr in countries:
         ptype = cfg["charts"]["main_policy_type"][ctr]
         for fuel in cfg["stage1"]["fuels"]:
             values = [get(m, ctr, fuel, "normal"), get(m, ctr, fuel, ptype), get(ig, ctr, fuel, "normal")]
@@ -183,11 +199,16 @@ def fig_policy_stage1(cfg, s1):
     ax.axvline(1, color=COLORS["grey"], lw=0.8, ls=":")
     ax.grid(axis="x"), ax.grid(axis="y", visible=False)
     ax.set_xlabel("cumulative pass-through after 4 weeks (1 = one-for-one)")
-    ax.legend(loc="lower right")
-    ax.set_title("Crude to pre-tax pump price after 4 weeks: normal times, with a measure in force, policy ignored")
+    if subset:
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=3)
+        ax.set_title(f"{', '.join(NAMES[c] for c in countries)}: crude to pre-tax pump price after 4 weeks, "
+                     "normal times vs. under the price cap")
+    else:
+        ax.legend(loc="lower right")
+        ax.set_title("Crude to pre-tax pump price after 4 weeks: normal times, with a measure in force, policy ignored")
     note = "Stage 1, 95% bands" + (" (clipped at the axis)" if clipped else "") + \
            ". 'Policy ignored': same model without any policy treatment."
-    save(fig, "04_policy_stage1", note)
+    save(fig, name, note, note_y=-0.24 if subset else -0.02)
 
 
 def fig_headline(cfg, s2):
@@ -209,7 +230,7 @@ def fig_headline(cfg, s2):
 
 COMPONENT_LABELS = {"fuels": "Fuels", "energy": "Energy", "electricity_gas": "Electricity, gas, heat",
                     "transport_services": "Transport services", "food": "Food", "core": "Core",
-                    "headline": "Headline"}
+                    "administered": "Administered prices", "headline": "Headline"}
 
 
 def fig_components(cfg, s2, h=12):
@@ -237,31 +258,75 @@ def fig_components(cfg, s2, h=12):
     save(fig, "06_components", "Stage 2 local projections, 2008-2026, 90% bands.")
 
 
-def fig_direct_indirect(cfg, s2, h=12):
-    m = s2[(s2["sample"] == "main") & (s2.component == "headline") & (s2.horizon == h)]
-    fig, ax = plt.subplots(figsize=(7, 4))
+CONTRIB_PARTS = [("fuels", "Fuels (direct)", COLORS["crude"]),
+                 ("other_energy", "Electricity, gas, heat (direct)", COLORS["margin"]),
+                 ("food", "Food (indirect)", "#E46C0A"),
+                 ("core", "Core (indirect)", "#A6A6A6")]
+
+
+def fig_petrol_diesel(cfg, s1, s2):
+    """HICP petrol vs. diesel response paths, with the Stage 1 implied long-run retail response as a reference."""
+    m = s2_main(s2)
+    el = s1_main(s1)
+    el = el[(el.regime == "normal") & (el.measure == "retail_elasticity")]
+    k = cfg["stage2"]["scale"]
+    fig, axes = plt.subplots(1, 3, figsize=(12, 3.8), sharey=True)
+    for ax, ctr in zip(axes, cfg["countries"]):
+        for fuel in cfg["stage1"]["fuels"]:
+            d = m[(m.country == ctr) & (m.component == fuel) & (m.regime == "normal")
+                  & (m.measure == "response")].sort_values("horizon")
+            ax.plot(d.horizon, d.estimate, FUEL_STYLE(fuel), color=C[ctr], lw=2, label=f"HICP {fuel}")
+            ax.fill_between(d.horizon, d.lower, d.upper, color=C[ctr], alpha=0.10, lw=0)
+            ref = k * el[(el.country == ctr) & (el.fuel == fuel)].estimate.iloc[0]
+            ax.axhline(ref, color=COLORS["grey"], lw=1, ls=FUEL_STYLE(fuel),
+                       label=f"Stage 1 long-run, {fuel}")
+        ax.axhline(0, color=COLORS["grey"], lw=0.8)
+        ax.set_title(NAMES[ctr])
+        ax.set_xlabel("months after the oil price rise")
+        ax.legend(loc="lower right", fontsize=7.5)
+    axes[0].set_ylabel("% change")
+    fig.suptitle(f"Petrol and diesel in the HICP: response to a {k}% oil price rise, 2015-2026",
+                 x=0.01, ha="left", fontweight="bold")
+    save(fig, "14_petrol_diesel",
+         "Stage 2 local projections on the HICP petrol and diesel indices (available from 2014-12), each with its own "
+         "fuel's tax changes held constant, 90% bands. Grey lines: Stage 1 retail-price elasticity x "
+         f"{k} (long-run pass-through to the price with tax, 2008-26, last two years' price structure).")
+
+
+def fig_direct_indirect(cfg, s2):
+    """Contributions to the headline response: 3 months, and 12 months before 2021 vs. the full sample."""
+    c = s2[s2.spec == "contribution"]
+    bars = [(3, "main", "3 months"), (12, "pre2021", "12 months\n2008-21"), (12, "main", "12 months\n2008-26")]
+    width, gap = 0.8, 1.2
+    fig, ax = plt.subplots(figsize=(11, 4.5))
+    ticks, labels = [], []
     for i, ctr in enumerate(cfg["countries"]):
-        get = lambda meas: m[(m.country == ctr) & (m.measure == meas)].estimate.iloc[0]
-        fuels, energy, indirect = get("fuels_direct"), get("energy_direct"), get("indirect")
-        parts = [(fuels, "Fuels (direct)", COLORS["crude"]),
-                 (energy - fuels, "Other energy (direct)", COLORS["margin"]),
-                 (indirect, "Indirect (other prices)", "#E46C0A")]
-        pos, neg = 0.0, 0.0
-        for v, lab, col in parts:
-            base = pos if v >= 0 else neg
-            ax.bar(i, v, bottom=base, color=col, width=0.55, label=lab if i == 0 else None)
-            if v >= 0:
-                pos += v
-            else:
-                neg += v
-        total = m[(m.country == ctr) & (m.measure == "response") & m.main_estimate].estimate.iloc[0]
-        ax.plot(i, total, marker="D", color="black", ms=6, label="Headline total" if i == 0 else None)
-    ax.set_xticks(range(len(cfg["countries"])), [NAMES[c] for c in cfg["countries"]])
+        for j, (h, sample, lab) in enumerate(bars):
+            x = i * (len(bars) + gap) + j
+            d = c[(c.country == ctr) & (c["sample"] == sample) & (c.horizon == h)].set_index("measure")
+            pos = neg = 0.0
+            for part, name, col in CONTRIB_PARTS:
+                v = d.loc[f"contrib_{part}", "estimate"]
+                ax.bar(x, v, bottom=pos if v >= 0 else neg, color=col, width=width,
+                       label=name if (i, j) == (0, 0) else None)
+                pos, neg = (pos + v, neg) if v >= 0 else (pos, neg + v)
+            t = d.loc["contrib_total"]
+            ax.errorbar(x, t.estimate, yerr=[[t.estimate - t.lower], [t.upper - t.estimate]], fmt="D",
+                        color="black", ms=5, capsize=3, lw=1, label="Total, 90% band" if (i, j) == (0, 0) else None)
+            ticks.append(x)
+            labels.append(lab)
+        ax.text(i * (len(bars) + gap) + (len(bars) - 1) / 2, 1.02, NAMES[ctr], transform=ax.get_xaxis_transform(),
+                ha="center", fontweight="bold", color=C[ctr])
+    ax.set_xticks(ticks, labels, fontsize=8)
     ax.axhline(0, color=COLORS["grey"], lw=0.8)
+    ax.grid(axis="x", visible=False)
     ax.set_ylabel("pp of headline HICP")
-    ax.legend(loc="upper right", fontsize=8)
-    ax.set_title(f"Headline response after {h} months to a {cfg['stage2']['scale']}% oil rise: direct vs. indirect")
-    save(fig, "07_direct_indirect", "Direct = latest HICP weight x component response; indirect = headline minus energy.")
+    ax.legend(loc="upper left", fontsize=8, ncol=1)
+    fig.suptitle(f"What drives the headline response to a {cfg['stage2']['scale']}% oil price rise: "
+                 "direct energy vs. indirect effects", x=0.01, ha="left", fontweight="bold")
+    save(fig, "07_direct_indirect",
+         "Stage 2 local projections on each component's contribution to headline inflation, year-specific HICP "
+         "weights; parts add up to the total. Energy, food (incl. alcohol, tobacco) and core cover the whole basket.")
 
 
 def fig_chain(cfg, s2, h=2):
@@ -309,9 +374,10 @@ def fig_counterfactual_prices(cfg, pol):
     w["date"] = pd.to_datetime(w["date"])
     w["episode_start"] = pd.to_datetime(w["episode_start"])
     recent = pd.Timestamp(cfg["charts"]["recent_episodes_start"])
-    note = ("Counterfactual: Stage 1 normal-times model run on the actual Brent path from the week before each "
-            "measure. Shaded: measure in force. Crude-only model: in 2026 the gap also contains changes in "
-            "refining margins, so market effects are indicative.")
+    method = ("Counterfactual: Stage 1 normal-times model run on the actual Brent path from the week before each "
+              "measure. Shaded: measure in force.")
+    note = method + (" Crude-only model: in 2026 the gap also contains changes in refining margins, and all three "
+                     "countries intervened (no control group), so market effects are indicative.")
 
     fig, axes = plt.subplots(1, 3, figsize=(13, 4))
     for ax, ctr in zip(axes, cfg["countries"]):
@@ -322,7 +388,7 @@ def fig_counterfactual_prices(cfg, pol):
         ax.xaxis.set_major_locator(mdates.MonthLocator())
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%b"))
         ax.legend(loc="upper left", fontsize=7.5)
-    fig.suptitle(f"2026 interventions: actual pump prices vs. model counterfactual ({recent.year})",
+    fig.suptitle(f"{recent.year} interventions: actual pump prices vs. model counterfactual",
                  x=0.01, ha="left", fontweight="bold")
     save(fig, "09_counterfactual_2026", note)
 
@@ -337,7 +403,9 @@ def fig_counterfactual_prices(cfg, pol):
         ax.set_title("Hungary 2021-23: petrol price under the cap and after it, HUF per litre")
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
         ax.legend(loc="upper left", fontsize=8)
-        save(fig, "10_counterfactual_hungary_2021", note + " Shading includes the post-cap window to Sep 2023.")
+        save(fig, "10_counterfactual_hungary_2021", method + " Shading includes the post-cap window to Sep 2023. "
+             "Crude-only model: it misses the 2022-23 rise in refining margins (especially diesel), so it overstates "
+             "the post-cap premium; the model-free cross-check (chart 12) puts it at about 5-9%.")
 
 
 def fig_counterfactual_inflation(cfg, pol):
@@ -363,8 +431,9 @@ def fig_counterfactual_inflation(cfg, pol):
     fig.suptitle("Direct effect of fuel interventions on headline inflation (y/y): negative = inflation lowered",
                  x=0.01, ha="left", fontweight="bold")
     save(fig, "11_counterfactual_inflation",
-         "Fuel weight x (actual - counterfactual annual change of the fuels index). Direct effect only; "
-         "includes base effects after a measure ends.")
+         "Fuel weight x (actual - counterfactual annual change of the fuels index). Direct effect only. After a "
+         "measure ends, annual inflation is compared with the capped prices a year earlier, so it turns positive: "
+         "the cap shifts inflation into the following year rather than removing it (Hungary 2023).")
 
 
 def fig_crosscheck(cfg, cc, pol, iv):
@@ -415,6 +484,151 @@ def policy_table(pol):
     print("    policy_episodes.csv")
 
 
+def sample_table(cfg, s2, horizons=(3, 12)):
+    """Stage 2 responses before 2021 vs. the full sample: how much of the effect comes from 2021-23.
+    Writes a CSV and a slide-ready image; cells where the full-sample estimate lies outside the
+    2008-21 band are highlighted."""
+    comps = ["headline", "fuels", "energy", "electricity_gas", "transport_services", "food", "core"]
+    samples = [("pre2021", "baseline", "2008-21"), ("main", "baseline", "2008-26"),
+               ("main", "gas_control", "gas fixed"), ("main", "constant_taxes", "const. taxes")]
+    r = s2[(s2.regime == "normal") & (s2.measure == "response")]
+    r = r[r.policy_handling == r.country.map(                       # the main estimate's policy version
+        s2[s2.main_estimate].drop_duplicates("country").set_index("country").policy_handling)]
+
+    rows, cells, outside = [], [], []
+    for comp in comps:
+        for h in horizons:
+            row, cell, out = {"component": COMPONENT_LABELS[comp], "months": h}, [], []
+            for ctr in cfg["countries"]:
+                est = {}
+                for sample, spec, label in samples:
+                    d = r[(r.country == ctr) & (r.component == comp) & (r["sample"] == sample)
+                          & (r.spec == spec) & (r.horizon == h)]
+                    est[(sample, spec)] = d.iloc[0]
+                    row[f"{NAMES[ctr]} {label}"] = round(d.estimate.iloc[0], 2)
+                    row[f"{NAMES[ctr]} {label} band"] = f"[{d.lower.iloc[0]:.2f}, {d.upper.iloc[0]:.2f}]"
+                    cell.append(f"{d.estimate.iloc[0]:.2f}")
+                pre, full = est[("pre2021", "baseline")], est[("main", "baseline")]
+                out += [False, not pre.lower <= full.estimate <= pre.upper, False, False]
+            rows.append(row)
+            cells.append(cell)
+            outside.append(out)
+    pd.DataFrame(rows).to_csv(utils.TABLES / "sample_comparison.csv", index=False)
+    print("    sample_comparison.csv")
+
+    n = len(samples)
+    fig, ax = plt.subplots(figsize=(15, 0.22 * len(cells) + 1.0))
+    ax.axis("off")
+    col_labels = [lab for _ in cfg["countries"] for _, _, lab in samples]
+    row_labels = [f"{r['component']}, {r['months']}m" for r in rows]
+    t = ax.table(cellText=cells, rowLabels=row_labels, colLabels=col_labels, loc="upper center", cellLoc="center")
+    t.auto_set_font_size(False)
+    t.set_fontsize(9)
+    t.scale(1, 1.35)
+    for (i, j), cell in t.get_celld().items():
+        cell.set_edgecolor(COLORS["light"])
+        if i == 0 or j == -1:
+            cell.set_text_props(fontweight="bold")
+        if i > 0 and j >= 0 and outside[i - 1][j]:
+            cell.set_facecolor(COLORS["policy"])
+            cell.set_text_props(fontweight="bold")
+    fig.canvas.draw()
+    for k, ctr in enumerate(cfg["countries"]):         # country header above its group of columns
+        a, b = t[0, n * k].get_window_extent(), t[0, n * k + n - 1].get_window_extent()
+        x = ax.transAxes.inverted().transform(((a.x0 + b.x1) / 2, a.y1))
+        ax.text(x[0], x[1] + 0.01, NAMES[ctr], transform=ax.transAxes, ha="center", va="bottom",
+                fontweight="bold", color=C[ctr])
+    ax.set_title(f"Response to a {cfg['stage2']['scale']}% oil price rise, %: before 2021, 2008-26 "
+                 "(incl. 2021-23 and 2026), and two robustness checks on 2008-26", pad=28)
+    save(fig, "13_sample_comparison",
+         "Stage 2 local projections, % change of each HICP component. Shaded: the 2008-26 estimate lies outside "
+         "the 90% band of the 2008-21 estimate. Gas fixed: EU gas price change (current and 3 lags) added; a lower "
+         "bound, as gas was partly oil-indexed before ~2015. Const. taxes: HICP at constant tax rates.", note_y=note_below(fig, t))
+
+
+def driver_table(cfg, weekly, monthly, s1, s2, recent_weeks=52):
+    """Why the countries differ: structural drivers next to the outcomes they explain."""
+    m2, m1 = s2_main(s2), s1_main(s1, sample="pre2020")
+    contrib = s2[s2.spec == "contribution"]
+    start = cfg["stage2"]["samples"]["main"]["start"]
+    sections = {"Drivers": [], "Outcomes": []}
+    values = {}
+    for ctr in cfg["countries"]:
+        mo = monthly[monthly.country == ctr]
+        latest = mo[mo.month == mo.month.max()].set_index("component")["weight"]
+        hist = mo[mo.month >= start]
+        w = weekly[(weekly.country == ctr) & ~weekly.in_intervention]
+        w = w[w.date >= w.date.max() - pd.Timedelta(weeks=recent_weeks)]
+        resp = lambda comp, h, meas="response", src=m2: src[
+            (src.country == ctr) & (src.component == comp) & (src.horizon == h) & (src.regime == "normal")
+            & (src.measure == meas)].estimate.iloc[0]
+        s1v = lambda meas, h=None: m1[(m1.country == ctr) & (m1.regime == "normal") & (m1.measure == meas)
+                                      & ((m1.horizon == h) if h is not None else m1.horizon.isna())].estimate.mean()
+        pre = s2[(s2["sample"] == "pre2021") & (s2.spec == "baseline") & (s2.regime == "normal")
+                 & (s2.measure == "response") & (s2.country == ctr) & (s2.component == "headline")
+                 & (s2.horizon == 12)].estimate.iloc[0]
+        c12 = contrib[(contrib.country == ctr) & (contrib["sample"] == "main") & (contrib.horizon == 12)]
+        c12 = c12.set_index("measure").estimate
+        values[ctr] = {
+            "Drivers": {
+                "Fuel weight in HICP, per mille (2026 / avg 2008-26)":
+                    f"{latest['fuels']:.0f} / {hist[hist.component == 'fuels'].drop_duplicates('month').weight.mean():.0f}",
+                "Petrol share of fuel weight, % (2026)": f"{100 * latest['petrol'] / (latest['petrol'] + latest['diesel']):.0f}",
+                "Crude share of pump price incl. VAT, % (last 52 wks)":
+                    f"{100 * ((1 + w.vat_pct / 100) * w.brent_lcu_prev_week / w.price_with_tax_lcu).mean():.0f}",
+                "Per-litre taxes (excise etc.), % of pump price": f"{100 * (w.fixed_taxes_lcu / w.price_with_tax_lcu).mean():.0f}",
+                "VAT on fuel, %": f"{w.vat_pct.iloc[-1]:.0f}",
+                "HICP fuels after 1 month, % per 10% weaker currency vs USD": f"{resp('fuels', 1, 'fx_response'):.1f}",
+                "Food weight / administered-price weight, per mille (2026)":
+                    f"{latest['food']:.0f} / {latest['administered']:.0f}",
+                "Months with a cap, margin cap or discount, 2008-26":
+                    f"{int((hist.drop_duplicates('month').intervention_share > 0).sum())}",
+            },
+            "Outcomes": {
+                "Pre-tax pump price: weeks to 90% of long run (2008-19)": f"{s1v('weeks_to_90pct'):.1f}",
+                "Pre-tax pass-through after 4 weeks (2008-19)": f"{s1v('cumulative', 4):.2f}",
+                "HICP fuels after 2 months, % per 10% oil": f"{resp('fuels', 2):.1f}",
+                "Headline after 3 months, % per 10% oil": f"{resp('headline', 3):.2f}",
+                "Headline after 12 months, 2008-21 / 2008-26": f"{pre:.2f} / {resp('headline', 12):.2f}",
+                "Of which direct energy / food / core, pp (12m, 2008-26)":
+                    f"{c12['contrib_direct']:.2f} / {c12['contrib_food']:.2f} / {c12['contrib_core']:.2f}",
+            },
+        }
+    rows = [(sec, label) for sec in sections for label in values[cfg["countries"][0]][sec]]
+    table = pd.DataFrame({NAMES[c]: [values[c][s][l] for s, l in rows] for c in cfg["countries"]},
+                         index=pd.MultiIndex.from_tuples(rows, names=["section", "item"]))
+    table.to_csv(utils.TABLES / "country_drivers.csv")
+    print("    country_drivers.csv")
+
+    cells, labels, header_rows = [], [], []
+    for sec in sections:
+        header_rows.append(len(cells))
+        cells.append([""] * len(cfg["countries"]))
+        labels.append(sec)
+        for label in values[cfg["countries"][0]][sec]:
+            cells.append(list(table.loc[(sec, label)]))
+            labels.append("  " + label)
+    fig, ax = plt.subplots(figsize=(11, 0.22 * len(cells) + 1.0))
+    ax.axis("off")
+    t = ax.table(cellText=cells, rowLabels=labels, colLabels=[NAMES[c] for c in cfg["countries"]],
+                 loc="upper center", cellLoc="center", rowLoc="left", colWidths=[0.16] * len(cfg["countries"]))
+    t.auto_set_font_size(False)
+    t.set_fontsize(9)
+    t.scale(1, 1.35)
+    for (i, j), cell in t.get_celld().items():
+        cell.set_edgecolor(COLORS["light"])
+        if i == 0:
+            cell.set_text_props(fontweight="bold", color=C[cfg["countries"][j]])
+        if i > 0 and (i - 1) in header_rows:
+            cell.set_facecolor("#F2F2F2")
+            cell.set_text_props(fontweight="bold")
+    ax.set_title("Why pass-through differs across Poland, Romania and Hungary", loc="left")
+    save(fig, "15_country_drivers",
+         "Pump-price structure: last 52 bulletin weeks without a non-tax measure, average of petrol and diesel. "
+         "Currency: Stage 2 coefficient on the local currency per USD, holding oil in USD fixed; mechanical benchmark "
+         "= crude share x the currency's own move after 1 month (about 13%), i.e. about 4%.", note_y=note_below(fig, t))
+
+
 # --- Table ---------------------------------------------------------------------------------------
 
 def country_table(cfg, weekly, monthly, s1, s2, s1d):
@@ -447,6 +661,11 @@ def country_table(cfg, weekly, monthly, s1, s2, s1d):
                   & (d.regime == "normal")]
             return d.estimate.iloc[0] if len(d) else np.nan
 
+        def contrib(part, h=12, sample="main"):
+            d = s2[(s2.spec == "contribution") & (s2.country == ctr) & (s2["sample"] == sample)
+                   & (s2.horizon == h) & (s2.measure == f"contrib_{part}")]
+            return d.estimate.iloc[0]
+
         rows.append({
             "country": NAMES[ctr],
             "fuel weight in HICP, per mille (latest)": latest.loc["fuels", "weight"],
@@ -463,8 +682,8 @@ def country_table(cfg, weekly, monthly, s1, s2, s1d):
             "headline after 3 months, % per 10% oil": s2v("headline", 3),
             "headline after 12 months, % per 10% oil": s2v("headline", 12),
             "core after 12 months, % per 10% oil": s2v("core", 12),
-            "indirect share of headline effect at 12 months, %":
-                100 * s2v("headline", 12, "indirect") / s2v("headline", 12),
+            "indirect (food + core) share of headline effect at 12 months, %":
+                100 * contrib("indirect") / contrib("total"),
         })
     table = pd.DataFrame(rows).set_index("country").T.round(2)
     table.to_csv(utils.TABLES / "country_comparison.csv")
@@ -491,10 +710,14 @@ def run(cfg):
     fig_pump_price(cfg, weekly, iv, start)
     fig_crude_to_pump(cfg, s1, s1d)
     fig_policy_stage1(cfg, s1)
+    fig_policy_stage1(cfg, s1, ["HU"], "04b_policy_stage1_hungary")
     fig_headline(cfg, s2)
     fig_components(cfg, s2)
     fig_direct_indirect(cfg, s2)
     fig_chain(cfg, s2)
+    sample_table(cfg, s2)
+    fig_petrol_diesel(cfg, s1, s2)
+    driver_table(cfg, weekly, monthly, s1, s2)
     pol_path = utils.RESULTS / "policy_counterfactual.csv"
     if pol_path.exists():
         pol = pd.read_csv(pol_path)

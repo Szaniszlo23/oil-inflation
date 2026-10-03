@@ -50,6 +50,22 @@ series:
     start: "2000"
     verified: true
 
+  eu_gas:
+    source: fred
+    code: PNGASEUUSDM             # natural gas, EU, IMF Primary Commodity Prices (via FRED); Stage 2 robustness control
+    frequency: monthly
+    unit: USD per MMBtu
+    start: "2000-01-01"
+    verified: true
+
+  hicp_constant_tax:
+    source: eurostat
+    dataset: prc_hicp_ct          # HICP at constant tax rates, ECOICOP ver.2; same component codes as hicp_index
+    unit: I25
+    frequency: monthly
+    start: "2002-12"              # first month published
+    verified: true
+
   ea_industrial_production:
     source: eurostat
     dataset: sts_inpr_m           # production in industry, monthly
@@ -118,8 +134,9 @@ stage1:
   sanity: {long_run_min: 0.6, long_run_max: 1.4, max_weeks_to_90pct: 26}
 
 stage2:
-  components: [headline, energy, fuels, electricity_gas, transport_services, food, core,
+  components: [headline, energy, fuels, petrol, diesel, electricity_gas, transport_services, food, core,
                administered, excl_administered]
+  short_components: [petrol, diesel]   # data from 2014-12 only (D3): main sample only, which then starts in 2015
   samples:
     main: {start: "2008-01", end: null}         # fuel tax wedge (weekly bulletin) available for all three from 2008
     pre2021: {start: "2008-01", end: "2021-10"} # before the first non-tax measure: market benchmark
@@ -130,7 +147,8 @@ stage2:
   band: 0.90
   break_month: "2017-01"            # ECOICOP ver.2 back-cast break (decisions D2)
   break_components: [energy, electricity_gas, core]
-  tax_control_components: [headline, energy, fuels]   # control for the change in the fuel tax wedge
+  tax_control_components: [headline, energy, fuels, petrol, diesel]   # control for the change in the fuel tax wedge
+                                                                      # (petrol, diesel: that fuel's own taxes)
   demand_control_components: [headline, core]          # control for euro-area industrial production
   min_policy_months: 12             # fewer months with a non-tax measure: no interaction, level control only
   sanity: {max_gap_normal_vs_exclude_pp: 0.3}          # per 10% oil rise, headline and fuels

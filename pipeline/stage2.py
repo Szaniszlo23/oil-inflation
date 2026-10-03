@@ -18,6 +18,12 @@ For each country, HICP component and horizon h = 0..H (docs/decisions.md D20):
           prices with and without tax would be a bad control: it falls mechanically when oil raises
           the pre-tax price.)
 
+Robustness runs on the main sample (`spec`): no_demand_control; gas_control (current and lagged
+% change in the EU gas price added: the oil effect holding gas fixed - a lower bound, because before
+about 2015 European gas contracts were oil-indexed, so part of gas was itself an oil effect);
+constant_taxes (HICP at constant tax rates as the dependent variable, removing all indirect-tax
+changes, not just fuel taxes; the fuel tax control is then dropped).
+
 Policy versions (config `policy_handling`), as in Stage 1:
   interactions  main: policy share, its interaction with oil, and the tax-wedge control
   ignore        none of the policy terms and no tax control (naive)
@@ -25,7 +31,8 @@ Policy versions (config `policy_handling`), as in Stage 1:
   exclude       tax control; windows containing any policy month are dropped
 
 Reports cumulative responses per 10% oil rise (normal times and with a measure in force),
-the split of the headline response into energy (of which fuels) and indirect effects,
+the split of the headline response into contributions of fuels, other energy, food and core
+(year-specific weights, each with a band; `contribution_responses`),
 and the pass-through chain (Brent in local currency -> pump price -> HICP fuels) as a check
 on Stage 1. Writes outputs/results/stage2_responses.csv.
 """
@@ -45,6 +52,7 @@ def monthly_inputs(m, fuels):
     out["oil"] = out["brent"].diff()
     out["fx"] = 100 * np.log(c["lcu_per_eur"] / c["usd_per_eur"]).diff()     # local currency per USD
     out["ip"] = 100 * np.log(c["ea_ip"]).diff()
+    out["gas"] = 100 * np.log(c["gas_usd"]).diff()
     out["policy"] = c["intervention_share"]
     for f in fuels:
         for col in ("pre_tax_lcu", "fixed_taxes_lcu", "vat_pct", "with_tax_lcu"):
@@ -64,6 +72,12 @@ def tax_effect(inp, fuels, h):
     return pd.concat(parts, axis=1).mean(axis=1, skipna=False)
 
 
+def break_dummy(index, h, s):
+    """1 if the window t..t+h contains the 2017 ECOICOP break month (D2)."""
+    brk = pd.Timestamp(s["break_month"])
+    return ((index <= brk) & (index + pd.DateOffset(months=h) >= brk)).astype(float)
+
+
 def lp_frame(price, inp, comp, h, s, version, sample, fuels):
     """Regression data for one component and horizon."""
     lnp = 100 * np.log(price)
@@ -81,16 +95,19 @@ def lp_frame(price, inp, comp, h, s, version, sample, fuels):
     if comp in s["demand_control_components"] and sample.get("demand", True):
         for L in range(0, s["lags"] + 1):
             d[f"ip_l{L}"] = inp["ip"].shift(L)
+    if sample.get("gas"):                      # robustness: oil effect holding the EU gas price fixed
+        for L in range(0, s["lags"] + 1):
+            d[f"gas_l{L}"] = inp["gas"].shift(L)
     for mth in range(2, 13):
         d[f"m{mth}"] = (d.index.month == mth).astype(float)
     if comp in s["break_components"]:
-        brk = pd.Timestamp(s["break_month"])
-        d["break_in_window"] = ((d.index <= brk) & (d.index + pd.DateOffset(months=h) >= brk)).astype(float)
+        d["break_in_window"] = break_dummy(d.index, h, s)
 
     # policy share over the window t..t+h
     S = inp["policy"].rolling(h + 1).mean().shift(-h)
-    if version in ("interactions", "dummies", "exclude") and comp in s["tax_control_components"]:
-        d["tax"] = tax_effect(inp, fuels, h)
+    if (version in ("interactions", "dummies", "exclude") and comp in s["tax_control_components"]
+            and not sample.get("constant_taxes")):    # constant-tax index: tax changes are already removed
+        d["tax"] = tax_effect(inp, [comp] if comp in fuels else fuels, h)   # petrol/diesel: own taxes
     if version == "interactions":
         d["policy"] = S
         d["oil_x_policy"] = inp["oil"] * S
@@ -119,10 +136,12 @@ def run(cfg):
     k = s["scale"]
     monthly = pd.read_parquet(utils.DATA_PROCESSED / "hicp_monthly.parquet")
     fuels = list(cfg["series"]["oil_bulletin"]["fuels"])
-    results, crude_share, oil_path = [], {}, {}
+    results, crude_share, oil_path, checks = [], {}, {}, {}
 
     runs = [("main", "baseline", v, s["samples"]["main"], {}) for v in cfg["policy_handling"]]
     runs += [("main", "no_demand_control", "interactions", s["samples"]["main"], {"demand": False}),
+             ("main", "gas_control", "interactions", s["samples"]["main"], {"gas": True}),
+             ("main", "constant_taxes", "interactions", s["samples"]["main"], {"constant_taxes": True}),
              ("pre2021", "baseline", "interactions", s["samples"]["pre2021"], {}),
              ("from2017", "baseline", "interactions", s["samples"]["from2017"], {"only": s["break_components"]})]
 
@@ -134,10 +153,13 @@ def run(cfg):
         identified = policy_months >= s["min_policy_months"]   # enough months to estimate a policy effect
         crude_share[ctr], oil_path[ctr] = benchmark_inputs(inp, fuels, s, cfg)
         for comp in s["components"]:
-            price = m[m.component == comp].set_index("month")["index"].sort_index()
+            rows_c = m[m.component == comp].set_index("month").sort_index()
             for sample_name, spec, version, sample, opts in runs:
+                price = rows_c["index_ct" if opts.get("constant_taxes") else "index"]
                 if "only" in opts and comp not in opts["only"]:
                     continue
+                if comp in s["short_components"] and (sample_name, spec) != ("main", "baseline"):
+                    continue                                # too short for the sub-samples
                 if version == "interactions" and not identified:
                     if (sample_name, spec) == ("main", "baseline"):
                         continue                            # the `dummies` run is the main estimate here
@@ -152,6 +174,9 @@ def run(cfg):
                     b, se = res.params["oil"], res.bse["oil"]
                     results.append({**base, "regime": "normal", "measure": "response",
                                     "estimate": k * b, "lower": k * (b - z * se), "upper": k * (b + z * se)})
+                    f, fse = res.params["fx"], res.bse["fx"]       # per 10% weakening of the currency vs USD
+                    results.append({**base, "regime": "normal", "measure": "fx_response",
+                                    "estimate": k * f, "lower": k * (f - z * fse), "upper": k * (f + z * fse)})
                     if "oil_x_policy" in res.params:
                         c = res.params["oil_x_policy"]
                         cov = res.cov_params()
@@ -182,14 +207,16 @@ def run(cfg):
                         "policy_handling": "interactions", "main_estimate": False, "horizon": np.nan,
                         "n_obs": np.nan, "regime": "normal", "measure": "crude_share",
                         "estimate": crude_share[ctr], "lower": np.nan, "upper": np.nan})
+        rows, checks[ctr] = contribution_responses(m, inp, s, "interactions" if identified else "dummies",
+                                                   fuels, ctr)
+        results += rows
         note = "" if identified else " (policy effect not estimated: too few policy months, level control only)"
         print(f"    {ctr}: {policy_months} months with a non-tax measure{note}")
 
     res = pd.DataFrame(results)
-    res = pd.concat([res, decomposition(res, monthly, cfg)], ignore_index=True)
     utils.RESULTS.mkdir(parents=True, exist_ok=True)
     res.to_csv(utils.RESULTS / "stage2_responses.csv", index=False)
-    summarise(res, cfg, crude_share, oil_path)
+    summarise(res, cfg, crude_share, oil_path, checks)
 
 
 def benchmark_inputs(inp, fuels, s, cfg):
@@ -210,29 +237,67 @@ def benchmark_inputs(inp, fuels, s, cfg):
     return share, path
 
 
-def decomposition(res, monthly, cfg):
-    """Headline response = energy weight x energy response (of which fuels) + indirect remainder.
-    Uses the latest year's HICP weights (per mille)."""
-    main = res[(res["sample"] == "main") & (res.spec == "baseline") & (res.regime == "normal")
-               & (res.measure == "response")]
+def contributions(m):
+    """Monthly contributions of fuels, energy, food and core to headline HICP inflation, pp.
+
+    The HICP is chain-linked each December with that year's weights w (per mille), so within year y
+        I_tot,t / I_tot,Dec(y-1) = sum_c w_c,y/1000 * I_c,t / I_c,Dec(y-1)
+    and the contribution of c to the monthly % change of the headline is
+        100 * w_c,y/1000 * (I_c,t - I_c,t-1) / I_c,Dec(y-1) * I_tot,Dec(y-1) / I_tot,t-1.
+    Energy, food (incl. alcohol and tobacco) and core weights sum to 1000, so their contributions
+    add up to the headline change. A year with a missing weight is interpolated from its neighbours.
+    Returns the contributions, the actual headline % change, and the interpolated (component, year)s."""
+    idx = m.pivot(index="month", columns="component", values="index").sort_index()
+    wt = m.pivot(index="month", columns="component", values="weight").sort_index()
+    annual = wt.groupby(wt.index.year).first()
+    filled = [(c, y) for c in ("fuels", "energy", "food", "core")
+              for y in annual.index[annual[c].isna() & annual[c].interpolate(limit_area="inside").notna()]]
+    annual = annual.interpolate(limit_area="inside")
+    w = annual.reindex(idx.index.year).set_axis(idx.index)
+    dec = pd.DatetimeIndex([pd.Timestamp(d.year - 1, 12, 1) for d in idx.index])
+    base = idx.reindex(dec).set_axis(idx.index)
+    scale = base["headline"] / idx["headline"].shift(1)
+    c = pd.DataFrame({k: 100 * w[k] / 1000 * idx[k].diff() / base[k] * scale
+                      for k in ("fuels", "energy", "food", "core")})
+    return c, 100 * idx["headline"].pct_change(), filled
+
+
+def contribution_responses(m, inp, s, version, fuels, ctr):
+    """Headline response split into contributions (pp), each with its own band (decisions D11).
+
+    Every part is regressed on the same right-hand side as the headline (its lags, oil, fx, controls,
+    the 2017 break dummy) on the same months, so the parts add up exactly to `total`. The dependent
+    variable is the sum of monthly contributions over t..t+h, i.e. pp of headline inflation."""
+    c, pct, filled = contributions(m)
+    parts = pd.DataFrame({
+        "fuels": c["fuels"], "other_energy": c["energy"] - c["fuels"], "food": c["food"], "core": c["core"],
+        "direct": c["energy"], "indirect": c["food"] + c["core"],
+        "total": c[["energy", "food", "core"]].sum(axis=1, min_count=3)})
+    gap = (parts["total"] - pct).loc[s["samples"]["main"]["start"]:].abs()
+    price = m[m.component == "headline"].set_index("month")["index"].sort_index()
+    z, k = norm.ppf(0.5 + s["band"] / 2), s["scale"]
     rows = []
-    for ctr in cfg["countries"]:
-        m = monthly[monthly.country == ctr]
-        latest = m[m.month == m.month.max()].set_index("component")["weight"]
-        resp = main[(main.country == ctr) & main.main_estimate].pivot(index="horizon", columns="component",
-                                                                       values="estimate")
-        energy = latest["energy"] / 1000 * resp["energy"]
-        fuels = latest["fuels"] / 1000 * resp["fuels"]
-        parts = {"energy_direct": energy, "fuels_direct": fuels, "indirect": resp["headline"] - energy}
-        for name, series in parts.items():
-            for h, v in series.items():
-                rows.append({"country": ctr, "component": "headline", "sample": "main", "spec": "baseline",
-                             "policy_handling": "main", "main_estimate": True, "horizon": h, "regime": "normal",
-                             "measure": name, "estimate": v, "lower": np.nan, "upper": np.nan, "n_obs": np.nan})
-    return pd.DataFrame(rows)
+    for sample_name in ("main", "pre2021"):
+        sample = s["samples"][sample_name]
+        for h in range(s["horizons"] + 1):
+            d = lp_frame(price, inp, "headline", h, s, version, {}, fuels)
+            d["break_in_window"] = break_dummy(d.index, h, s)
+            cum = parts.rolling(h + 1).sum().shift(-h)               # sum of contributions over t..t+h
+            valid = cum.notna().all(axis=1)
+            for part in parts.columns:
+                d["y"] = cum[part].where(valid)
+                res = fit(d, h, s, sample["start"], sample["end"], version)
+                b, se = res.params["oil"], res.bse["oil"]
+                rows.append({"country": ctr, "component": "headline", "sample": sample_name,
+                             "spec": "contribution", "policy_handling": version, "main_estimate": False,
+                             "horizon": h, "n_obs": int(res.nobs), "regime": "normal",
+                             "measure": f"contrib_{part}", "estimate": k * b,
+                             "lower": k * (b - z * se), "upper": k * (b + z * se)})
+    check = {"mean_abs_gap_pp": gap.mean(), "max_abs_gap_pp": gap.max(), "filled_weights": filled}
+    return rows, check
 
 
-def summarise(res, cfg, crude_share, oil_path):
+def summarise(res, cfg, crude_share, oil_path, checks):
     s = cfg["stage2"]
     main = res[(res["sample"] == "main") & (res.spec == "baseline")]
 
@@ -252,10 +317,27 @@ def summarise(res, cfg, crude_share, oil_path):
             cells.append(f"{r.estimate:6.2f} [{r.lower:5.2f},{r.upper:5.2f}]")
         print(f"    {ctr:4s}" + "".join(f"{c:>22s}" for c in cells))
 
-    print("\n    Headline response at 12 months, split (pp):")
+    contrib = res[res.spec == "contribution"]
+    parts = ["fuels", "other_energy", "food", "core", "total"]
+    print(f"\n    Headline response split into contributions, pp per {s['scale']}% oil rise "
+          f"(year-specific HICP weights; parts add up to total):")
+    print(f"    {'':14s}" + "".join(f"{p:>14s}" for p in parts) + f"{'headline LP':>14s}")
     for ctr in cfg["countries"]:
-        e, f, i = (val(ctr, "headline", 12, measure=x).estimate for x in ("energy_direct", "fuels_direct", "indirect"))
-        print(f"    {ctr}: energy {e:.2f} (of which fuels {f:.2f}), indirect {i:.2f}")
+        for sample_name in ("main", "pre2021"):
+            for h in (3, 12):
+                c = contrib[(contrib.country == ctr) & (contrib["sample"] == sample_name) & (contrib.horizon == h)]
+                c = c.set_index("measure")
+                cells = "".join(f"{c.loc[f'contrib_{p}', 'estimate']:14.2f}" for p in parts)
+                lp = res[(res.country == ctr) & (res.component == "headline") & (res["sample"] == sample_name)
+                         & (res.spec == "baseline") & (res.horizon == h) & (res.regime == "normal")
+                         & (res.measure == "response") & (res.policy_handling == c.policy_handling.iloc[0])]
+                print(f"    {ctr} {sample_name:8s}{h:2d}m" + cells + f"{lp.estimate.iloc[0]:14.2f}")
+    print("    Additivity check, energy + food + core contributions vs. actual headline monthly change "
+          "(from 2008):")
+    for ctr, chk in checks.items():
+        filled = ", ".join(f"{c} {y}" for c, y in chk["filled_weights"]) or "none"
+        print(f"    {ctr}: mean abs gap {chk['mean_abs_gap_pp']:.3f} pp, max {chk['max_abs_gap_pp']:.3f} pp; "
+              f"weights interpolated: {filled}")
 
     # pass-through chain at 1-3 months: Brent in local currency -> pump price -> HICP fuels
     chain = res[(res["sample"] == "main") & (res.spec == "chain")]

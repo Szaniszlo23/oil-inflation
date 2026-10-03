@@ -17,6 +17,7 @@ Conversions (see docs/decisions.md):
   - Weekly grid: holiday gaps in the bulletin are filled by linear interpolation and
     flagged (`interpolated`); Brent for those Mondays comes from the daily data (D6)
   - Policy flags: price caps, subsidies etc. from interventions.csv, one column per type
+  - Robustness inputs for Stage 2: HICP at constant tax rates (`index_ct`) and the EU gas price
 
 Units: "lcu" = local currency (PLN, RON, HUF); all prices and taxes are per litre.
 The script stops with an error if any sanity check fails.
@@ -202,12 +203,28 @@ def load_interventions(cfg):
     return iv.explode("fuel")
 
 
-def load_hicp(snap, cfg):
+def load_gas(snap, cfg):
+    """EU natural gas price, USD per MMBtu, monthly (FRED dates are the first of the month)."""
+    code = cfg["series"]["eu_gas"]["code"]
+    path = snap / f"fred_{code}.json"
+    if not path.exists():
+        raise FileNotFoundError(f"{path.name} not in snapshot {snap.name} - run `python run.py --refresh`")
+    obs = json.loads(path.read_text())["observations"]
+    s = pd.Series({pd.Timestamp(o["date"]): o["value"] for o in obs})
+    return pd.to_numeric(s, errors="coerce").dropna().sort_index().rename("gas_usd")
+
+
+def load_hicp(snap, cfg, key="hicp_index"):
+    """HICP indices for the configured components; key = hicp_index or hicp_constant_tax (same codes)."""
     idx_cfg = cfg["series"]["hicp_index"]
+    dataset = cfg["series"][key]["dataset"]
     code_to_name = {code: name for name, code in idx_cfg["components"].items()}
     frames = []
     for ctr in cfg["countries"]:
-        js = json.loads((snap / f"eurostat_{idx_cfg['dataset']}_{ctr}.json").read_text())
+        path = snap / f"eurostat_{dataset}_{ctr}.json"
+        if not path.exists():
+            raise FileNotFoundError(f"{path.name} not in snapshot {snap.name} - run `python run.py --refresh`")
+        js = json.loads(path.read_text())
         df = jsonstat_long(js)
         df = df[df.coicop18.isin(code_to_name)]
         frames.append(df)
@@ -289,7 +306,10 @@ def build_fuel_weekly(snap, cfg, fx, brent, iv):
 
 def build_hicp_monthly(snap, cfg, fx, brent, iv, weekly):
     hicp = load_hicp(snap, cfg)
+    ct = load_hicp(snap, cfg, "hicp_constant_tax")[["country", "month", "component", "index"]]
+    hicp = hicp.merge(ct.rename(columns={"index": "index_ct"}), on=["country", "month", "component"], how="left")
     ea_ip = load_ea_ip(snap, cfg)
+    gas = load_gas(snap, cfg)
     weights = load_weights(snap, cfg)
     hicp["year"] = hicp.month.dt.year
     hicp = hicp.merge(weights, on=["country", "coicop", "year"], how="left")
@@ -318,6 +338,7 @@ def build_hicp_monthly(snap, cfg, fx, brent, iv, weekly):
             d[f"{fuel}_vat_pct"] = wf.vat_pct.mean()
             d[f"{fuel}_fixed_taxes_lcu"] = wf.fixed_taxes_lcu.mean()
         d["ea_ip"] = ea_ip.reindex(d.index)
+        d["gas_usd"] = gas.reindex(d.index)
 
         # share of days in the month with at least one non-tax policy measure
         days = pd.date_range(d.index.min(), d.index.max() + pd.offsets.MonthEnd(0), freq="D")
@@ -376,6 +397,14 @@ def check(weekly, monthly, cfg):
 
     if monthly["ea_ip"].notna().sum() == 0:
         problems.append("euro-area industrial production is empty")
+    if monthly["gas_usd"].notna().sum() == 0:
+        problems.append("EU gas price is empty")
+    s2_start = cfg["stage2"]["samples"]["main"]["start"]
+    for ctr in cfg["countries"]:
+        ct = monthly[(monthly.country == ctr) & (monthly.month >= s2_start)
+                     & (monthly.component.isin(["headline", "energy", "fuels", "food", "core"]))]
+        if ct["index_ct"].isna().any():
+            problems.append(f"{ctr}: HICP at constant tax rates has gaps in the Stage 2 sample")
 
     total = monthly[monthly.component == "headline"].drop_duplicates(["country", "weight"])
     total = total.dropna(subset=["weight"])
