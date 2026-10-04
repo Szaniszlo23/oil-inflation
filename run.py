@@ -14,7 +14,7 @@ import sys
 
 from pipeline import utils
 
-STAGES = ["fetch", "build", "stage1", "stage2", "policy", "charts"]
+STAGES = ["fetch", "build", "stage1", "stage2", "chain", "policy", "charts"]
 
 
 def main():

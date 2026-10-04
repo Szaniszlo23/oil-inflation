@@ -156,6 +156,11 @@ stage2:
   min_policy_months: 12             # fewer months with a non-tax measure: no interaction, level control only
   sanity: {max_gap_normal_vs_exclude_pp: 0.3}          # per 10% oil rise, headline and fuels
 
+chain:                              # Stage 1 and Stage 2 combined (pipeline/chain.py)
+  pairs:                            # name: [stage1 sample, stage2 sample]
+    normal_times: [pre2020, pre2021]
+    full_period: [main, main]
+
 charts:
   context_start: "2019-01-01"       # first date shown in the context and pump-price charts
   main_policy_type: {PL: margin_cap, RO: margin_cap, HU: hard_cap}   # measure shown per country in chart 04 (PL: maximum prices are margin-based)

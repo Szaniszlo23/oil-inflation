@@ -21,6 +21,8 @@ Writes outputs/figures/:
   14_petrol_diesel                Stage 2: HICP petrol vs. diesel, with the Stage 1 long-run reference
   15_country_drivers              why the countries differ: structural drivers next to outcomes (table)
   16_energy_contributions         petrol, diesel, household gas, electricity, heating: contributions to headline
+  17_chain_normal_times           Stage 1 and Stage 2 combined: crude -> pump price -> HICP fuels -> headline
+  17b_chain_full_period           the same on 2008-26
 and outputs/tables/country_comparison.csv, policy_episodes.csv.
 
 Stage 1 headline numbers (chart 03, comparison table) use the 2008-2019 sample, where the long-run
@@ -548,6 +550,63 @@ def sample_table(cfg, s2, horizons=(3, 12)):
          "bound, as gas was partly oil-indexed before ~2015. Const. taxes: HICP at constant tax rates.", note_y=note_below(fig, t))
 
 
+def fig_chain_combined(cfg, ch, pairing, name, horizons=(1, 3, 12)):
+    """The pass-through chain: price steps (top) and contributions to headline (bottom), per country."""
+    d = ch[ch.pairing == pairing]
+    get = lambda ctr, step, source: d[(d.country == ctr) & (d.step == step) & (d.source == source)].set_index("horizon")
+    k = cfg["stage2"]["scale"]
+    fig, axes = plt.subplots(2, 3, figsize=(13, 7), sharey="row")
+    x = np.arange(len(horizons))
+    for col, ctr in enumerate(cfg["countries"]):
+        top, bottom = axes[0, col], axes[1, col]
+        bars = [("Brent in local currency", get(ctr, "brent_lcu_pct", "stage2"), "#A6A6A6", True),
+                ("Pump price incl. tax, predicted from Stage 1", get(ctr, "hicp_fuels_pct", "predicted"),
+                 COLORS["crude"], False),
+                ("HICP fuels, estimated (Stage 2)", get(ctr, "hicp_fuels_pct", "stage2"), COLORS["crude"], True)]
+        for j, (lab, s, colr, filled) in enumerate(bars):
+            v = s.loc[list(horizons)]
+            top.bar(x + (j - 1) * 0.27, v.value, width=0.26, color=colr if filled else "white", edgecolor=colr,
+                    lw=1.5, label=lab if col == 0 else None)
+            if v.lower.notna().all():
+                top.errorbar(x + (j - 1) * 0.27, v.value, yerr=[v.value - v.lower, v.upper - v.value],
+                             fmt="none", color="black", lw=0.8, capsize=2)
+        top.set_xticks(x, [f"{h}m" for h in horizons])
+        top.set_title(NAMES[ctr], color=C[ctr])
+        top.grid(axis="x", visible=False)
+
+        for i, h in enumerate(horizons):
+            pos = neg = 0.0
+            for part, lab, colr in CONTRIB_PARTS:
+                v = get(ctr, "direct_fuels_pp" if part == "fuels" else f"{part}_pp", "stage2").value[h]
+                bottom.bar(i, v, bottom=pos if v >= 0 else neg, width=0.55, color=colr,
+                           label=lab if (col, i) == (0, 0) else None)
+                pos, neg = (pos + v, neg) if v >= 0 else (pos, neg + v)
+            t = get(ctr, "total_pp", "stage2").loc[h]
+            bottom.errorbar(i, t.value, yerr=[[t.value - t.lower], [t.upper - t.value]], fmt="D", color="black",
+                            ms=5, capsize=3, lw=1, label="Headline total, 90% band" if (col, i) == (0, 0) else None)
+            pred = get(ctr, "direct_fuels_pp", "predicted").value[h]
+            bottom.plot([i - 0.33, i + 0.33], [pred, pred], color=COLORS["accent"], lw=2,
+                        label="Fuels in headline, predicted from Stage 1" if (col, i) == (0, 0) else None)
+        bottom.axhline(0, color=COLORS["grey"], lw=0.8)
+        bottom.set_xticks(x, [f"{h}m" for h in horizons])
+        bottom.grid(axis="x", visible=False)
+    axes[0, 0].set_ylabel(f"% change per {k}% oil rise")
+    axes[1, 0].set_ylabel("pp of headline HICP")
+    fig.legend(*axes[0, 0].get_legend_handles_labels(), loc="upper center", ncol=3, bbox_to_anchor=(0.5, 0.94),
+               fontsize=8)
+    fig.legend(*axes[1, 0].get_legend_handles_labels(), loc="lower center", ncol=3, bbox_to_anchor=(0.5, 0.0),
+               fontsize=8)
+    pair = cfg["chain"]["pairs"][pairing]
+    period = {"pre2020": "2008-19", "pre2021": "2008-21", "main": "2008-26"}
+    fig.suptitle(f"From crude oil to headline inflation: Stage 1 ({period[pair[0]]}) and Stage 2 "
+                 f"({period[pair[1]]}) combined", x=0.01, ha="left", fontweight="bold")
+    save(fig, name, "Top: Brent in local currency (local projection); pump price predicted by feeding that path "
+         "through the weekly Stage 1 model, times the crude share of the pump price incl. VAT (petrol and diesel, "
+         "HICP-weighted); HICP fuels estimated in Stage 2, 90% bands. Bottom: Stage 2 contributions to headline "
+         "(year-specific weights); red line: predicted fuel price x average fuel weight.",
+         note_y=-0.03, rect=(0, 0.07, 1, 0.88))
+
+
 def energy_table(cfg, monthly, s2, horizons=(3, 12)):
     """Contribution of each energy item to the headline response, with its basket weight."""
     items = [("petrol", "from2015", "Petrol (2015-26)"), ("diesel", "from2015", "Diesel (2015-26)"),
@@ -611,7 +670,8 @@ def driver_table(cfg, weekly, monthly, s1, s2, recent_weeks=52):
     m2, m1 = s2_main(s2), s1_main(s1, sample="pre2020")
     contrib = s2[s2.spec == "contribution"]
     start = cfg["stage2"]["samples"]["main"]["start"]
-    sections = {"Drivers": [], "Outcomes": []}
+    sections = ["1. Crude in local currency", "2. Pump price before tax", "3. Pump price with tax",
+                "4. HICP fuels", "5. Direct effect on headline", "6. Indirect effects", "Headline", "Policy"]
     values = {}
     for ctr in cfg["countries"]:
         mo = monthly[monthly.country == ctr]
@@ -629,29 +689,44 @@ def driver_table(cfg, weekly, monthly, s1, s2, recent_weeks=52):
                  & (s2.horizon == 12)].estimate.iloc[0]
         c12 = contrib[(contrib.country == ctr) & (contrib["sample"] == "main") & (contrib.horizon == 12)]
         c12 = c12.set_index("measure").estimate
+        c3 = contrib[(contrib.country == ctr) & (contrib["sample"] == "main") & (contrib.horizon == 3)]
+        c3 = c3.set_index("measure").estimate
         values[ctr] = {
-            "Drivers": {
-                "Fuel weight in HICP, per mille (2026 / avg 2008-26)":
-                    f"{latest['fuels']:.0f} / {hist[hist.component == 'fuels'].drop_duplicates('month').weight.mean():.0f}",
-                "Petrol share of fuel weight, % (2026)": f"{100 * latest['petrol'] / (latest['petrol'] + latest['diesel']):.0f}",
+            "1. Crude in local currency": {
+                "HICP fuels after 1 month, % per 10% weaker currency vs USD": f"{resp('fuels', 1, 'fx_response'):.1f}",
+            },
+            "2. Pump price before tax": {
+                "Pass-through after 4 weeks (2008-19)": f"{s1v('cumulative', 4):.2f}",
+                "Weeks to 90% of long run (2008-19)": f"{s1v('weeks_to_90pct'):.1f}",
+            },
+            "3. Pump price with tax": {
                 "Crude share of pump price incl. VAT, % (last 52 wks)":
                     f"{100 * ((1 + w.vat_pct / 100) * w.brent_lcu_prev_week / w.price_with_tax_lcu).mean():.0f}",
                 "Per-litre taxes (excise etc.), % of pump price": f"{100 * (w.fixed_taxes_lcu / w.price_with_tax_lcu).mean():.0f}",
                 "VAT on fuel, %": f"{w.vat_pct.iloc[-1]:.0f}",
-                "HICP fuels after 1 month, % per 10% weaker currency vs USD": f"{resp('fuels', 1, 'fx_response'):.1f}",
+            },
+            "4. HICP fuels": {
+                "HICP fuels after 2 months, % per 10% oil": f"{resp('fuels', 2):.1f}",
+            },
+            "5. Direct effect on headline": {
+                "Fuel weight in HICP, per mille (2026 / avg 2008-26)":
+                    f"{latest['fuels']:.0f} / {hist[hist.component == 'fuels'].drop_duplicates('month').weight.mean():.0f}",
+                "Petrol share of fuel weight, % (2026)": f"{100 * latest['petrol'] / (latest['petrol'] + latest['diesel']):.0f}",
+                "Fuels in headline after 3 months, pp": f"{c3['contrib_fuels']:.2f}",
+            },
+            "6. Indirect effects": {
                 "Food weight / administered-price weight, per mille (2026)":
                     f"{latest['food']:.0f} / {latest['administered']:.0f}",
-                "Months with a cap, margin cap or discount, 2008-26":
-                    f"{int((hist.drop_duplicates('month').intervention_share > 0).sum())}",
+                "Food / core in headline after 12 months, pp (2008-26)":
+                    f"{c12['contrib_food']:.2f} / {c12['contrib_core']:.2f}",
             },
-            "Outcomes": {
-                "Pre-tax pump price: weeks to 90% of long run (2008-19)": f"{s1v('weeks_to_90pct'):.1f}",
-                "Pre-tax pass-through after 4 weeks (2008-19)": f"{s1v('cumulative', 4):.2f}",
-                "HICP fuels after 2 months, % per 10% oil": f"{resp('fuels', 2):.1f}",
+            "Headline": {
                 "Headline after 3 months, % per 10% oil": f"{resp('headline', 3):.2f}",
                 "Headline after 12 months, 2008-21 / 2008-26": f"{pre:.2f} / {resp('headline', 12):.2f}",
-                "Of which direct energy / food / core, pp (12m, 2008-26)":
-                    f"{c12['contrib_direct']:.2f} / {c12['contrib_food']:.2f} / {c12['contrib_core']:.2f}",
+            },
+            "Policy": {
+                "Months with a cap, margin cap or discount, 2008-26":
+                    f"{int((hist.drop_duplicates('month').intervention_share > 0).sum())}",
             },
         }
     rows = [(sec, label) for sec in sections for label in values[cfg["countries"][0]][sec]]
@@ -682,7 +757,8 @@ def driver_table(cfg, weekly, monthly, s1, s2, recent_weeks=52):
         if i > 0 and (i - 1) in header_rows:
             cell.set_facecolor("#F2F2F2")
             cell.set_text_props(fontweight="bold")
-    ax.set_title("Why pass-through differs across Poland, Romania and Hungary", loc="left")
+    ax.set_title("Why pass-through differs across Poland, Romania and Hungary, step by step along the chain",
+                 loc="left")
     save(fig, "15_country_drivers",
          "Pump-price structure: last 52 bulletin weeks without a non-tax measure, average of petrol and diesel. "
          "Currency: Stage 2 coefficient on the local currency per USD, holding oil in USD fixed; mechanical benchmark "
@@ -779,6 +855,13 @@ def run(cfg):
     fig_petrol_diesel(cfg, s1, s2)
     driver_table(cfg, weekly, monthly, s1, s2)
     energy_table(cfg, monthly, s2)
+    chain_path = utils.RESULTS / "chain.csv"
+    if chain_path.exists():
+        ch = pd.read_csv(chain_path)
+        fig_chain_combined(cfg, ch, "normal_times", "17_chain_normal_times")
+        fig_chain_combined(cfg, ch, "full_period", "17b_chain_full_period")
+    else:
+        print("    note: outputs/results/chain.csv not found - chart 17 skipped (run: python run.py --from chain)")
     pol_path = utils.RESULTS / "policy_counterfactual.csv"
     if pol_path.exists():
         pol = pd.read_csv(pol_path)
