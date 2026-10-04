@@ -20,6 +20,7 @@ Writes outputs/figures/:
   13_sample_comparison            Stage 2 responses before 2021 vs. the full sample (table)
   14_petrol_diesel                Stage 2: HICP petrol vs. diesel, with the Stage 1 long-run reference
   15_country_drivers              why the countries differ: structural drivers next to outcomes (table)
+  16_energy_contributions         petrol, diesel, household gas, electricity, heating: contributions to headline
 and outputs/tables/country_comparison.csv, policy_episodes.csv.
 
 Stage 1 headline numbers (chart 03, comparison table) use the 2008-2019 sample, where the long-run
@@ -229,6 +230,7 @@ def fig_headline(cfg, s2):
 
 
 COMPONENT_LABELS = {"fuels": "Fuels", "energy": "Energy", "electricity_gas": "Electricity, gas, heat",
+                    "electricity": "  of which electricity", "household_gas": "  of which household gas",
                     "transport_services": "Transport services", "food": "Food", "core": "Core",
                     "administered": "Administered prices", "headline": "Headline"}
 
@@ -546,6 +548,64 @@ def sample_table(cfg, s2, horizons=(3, 12)):
          "bound, as gas was partly oil-indexed before ~2015. Const. taxes: HICP at constant tax rates.", note_y=note_below(fig, t))
 
 
+def energy_table(cfg, monthly, s2, horizons=(3, 12)):
+    """Contribution of each energy item to the headline response, with its basket weight."""
+    items = [("petrol", "from2015", "Petrol (2015-26)"), ("diesel", "from2015", "Diesel (2015-26)"),
+             ("household_gas", "main", "Household gas"), ("electricity", "main", "Electricity"),
+             ("heating_other", "main", "Heating, solid and liquid fuels"),
+             ("household_gas", "pre2021", "Household gas, 2008-21"),
+             ("heating_other", "pre2021", "Heating, solid and liquid fuels, 2008-21")]
+    c = s2[s2.spec == "contribution"]
+    rows, cells = [], []
+    for part, sample, label in items:
+        row, cell = {"item": label}, []
+        for ctr in cfg["countries"]:
+            lw = monthly[(monthly.country == ctr) & (monthly.month == monthly.month.max())].set_index("component").weight
+            weight = {"heating_other": lw["energy"] - lw["fuels"] - lw["electricity"] - lw["household_gas"]}.get(
+                part, lw.get(part, np.nan))
+            row[f"{NAMES[ctr]} weight 2026"] = round(weight, 1)
+            cell.append(f"{weight:.0f}")
+            for h in horizons:
+                d = c[(c.country == ctr) & (c["sample"] == sample) & (c.horizon == h)
+                      & (c.measure == f"contrib_{part}")].iloc[0]
+                row[f"{NAMES[ctr]} {h}m"] = round(d.estimate, 2)
+                row[f"{NAMES[ctr]} {h}m band"] = f"[{d.lower:.2f}, {d.upper:.2f}]"
+                cell.append(f"{d.estimate:.2f}")
+        rows.append(row)
+        cells.append(cell)
+    pd.DataFrame(rows).to_csv(utils.TABLES / "energy_contributions.csv", index=False)
+    print("    energy_contributions.csv")
+
+    n = 1 + len(horizons)
+    fig, ax = plt.subplots(figsize=(13, 0.22 * len(cells) + 1.0))
+    ax.axis("off")
+    col_labels = [lab for _ in cfg["countries"] for lab in ["weight, ‰"] + [f"{h}m" for h in horizons]]
+    t = ax.table(cellText=cells, rowLabels=[r["item"] for r in rows], colLabels=col_labels,
+                 loc="upper center", cellLoc="center")
+    t.auto_set_font_size(False)
+    t.set_fontsize(9)
+    t.scale(1, 1.35)
+    for (i, j), cell in t.get_celld().items():
+        cell.set_edgecolor(COLORS["light"])
+        if i == 0 or j == -1:
+            cell.set_text_props(fontweight="bold")
+        if j >= 0 and j % n == 0 and i > 0:
+            cell.set_text_props(color=COLORS["grey"])
+    fig.canvas.draw()
+    for k, ctr in enumerate(cfg["countries"]):
+        a, b = t[0, n * k].get_window_extent(), t[0, n * k + n - 1].get_window_extent()
+        x = ax.transAxes.inverted().transform(((a.x0 + b.x1) / 2, a.y1))
+        ax.text(x[0], x[1] + 0.01, NAMES[ctr], transform=ax.transAxes, ha="center", va="bottom",
+                fontweight="bold", color=C[ctr])
+    ax.set_title(f"Energy items: contribution to headline inflation after a {cfg['stage2']['scale']}% oil price "
+                 "rise, pp", pad=28)
+    save(fig, "16_energy_contributions",
+         "Stage 2 local projections on each item's contribution to headline inflation (year-specific HICP weights), "
+         "2008-26 unless marked; petrol and diesel from 2015 (HICP indices start 2014-12). Weight: 2026, per mille. "
+         "Heating, solid and liquid fuels = energy excluding transport fuels, electricity and gas.",
+         note_y=note_below(fig, t))
+
+
 def driver_table(cfg, weekly, monthly, s1, s2, recent_weeks=52):
     """Why the countries differ: structural drivers next to the outcomes they explain."""
     m2, m1 = s2_main(s2), s1_main(s1, sample="pre2020")
@@ -718,6 +778,7 @@ def run(cfg):
     sample_table(cfg, s2)
     fig_petrol_diesel(cfg, s1, s2)
     driver_table(cfg, weekly, monthly, s1, s2)
+    energy_table(cfg, monthly, s2)
     pol_path = utils.RESULTS / "policy_counterfactual.csv"
     if pol_path.exists():
         pol = pd.read_csv(pol_path)

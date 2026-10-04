@@ -37,6 +37,8 @@ series:
       diesel: CP07221             # from 2014-12 only
       petrol: CP07222             # from 2014-12 only
       electricity_gas: ELC_GAS    # electricity, gas, solid fuels, heat; same 2017 break as energy
+      electricity: CP0451         # household electricity (no break flags)
+      household_gas: CP0452       # household gas: natural gas through networks + bottled LPG (no break flags)
       transport_services: CP073   # passenger transport services
       food: FOOD                  # food including alcohol and tobacco
       core: TOT_X_NRG_FOOD        # excl. energy, food, alcohol, tobacco; same 2017 break
@@ -134,13 +136,14 @@ stage1:
   sanity: {long_run_min: 0.6, long_run_max: 1.4, max_weeks_to_90pct: 26}
 
 stage2:
-  components: [headline, energy, fuels, petrol, diesel, electricity_gas, transport_services, food, core,
-               administered, excl_administered]
+  components: [headline, energy, fuels, petrol, diesel, electricity_gas, electricity, household_gas,
+               transport_services, food, core, administered, excl_administered]
   short_components: [petrol, diesel]   # data from 2014-12 only (D3): main sample only, which then starts in 2015
   samples:
     main: {start: "2008-01", end: null}         # fuel tax wedge (weekly bulletin) available for all three from 2008
     pre2021: {start: "2008-01", end: "2021-10"} # before the first non-tax measure: market benchmark
     from2017: {start: "2017-01", end: null}     # components with the 2017 break (D2)
+    from2015: {start: "2015-01", end: null}     # petrol and diesel contributions (HICP indices from 2014-12)
   horizons: 12                      # months
   lags: 3                           # lags of the component, oil, exchange rate (and demand control)
   scale: 10                         # responses reported per 10% oil price rise

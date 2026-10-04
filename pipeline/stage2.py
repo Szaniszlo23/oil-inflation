@@ -258,7 +258,8 @@ def contributions(m):
     base = idx.reindex(dec).set_axis(idx.index)
     scale = base["headline"] / idx["headline"].shift(1)
     c = pd.DataFrame({k: 100 * w[k] / 1000 * idx[k].diff() / base[k] * scale
-                      for k in ("fuels", "energy", "food", "core")})
+                      for k in ("fuels", "energy", "food", "core", "electricity", "household_gas", "petrol", "diesel")
+                      if k in idx})
     return c, 100 * idx["headline"].pct_change(), filled
 
 
@@ -267,24 +268,33 @@ def contribution_responses(m, inp, s, version, fuels, ctr):
 
     Every part is regressed on the same right-hand side as the headline (its lags, oil, fx, controls,
     the 2017 break dummy) on the same months, so the parts add up exactly to `total`. The dependent
-    variable is the sum of monthly contributions over t..t+h, i.e. pp of headline inflation."""
+    variable is the sum of monthly contributions over t..t+h, i.e. pp of headline inflation.
+
+    Other energy is further split into electricity, household gas and the rest (heating, solid and
+    liquid fuels). Petrol and diesel (HICP indices from 2014-12) form a separate group on the
+    `from2015` sample, so they do not shorten the main sample."""
     c, pct, filled = contributions(m)
+    other_energy = c["energy"] - c["fuels"]
     parts = pd.DataFrame({
-        "fuels": c["fuels"], "other_energy": c["energy"] - c["fuels"], "food": c["food"], "core": c["core"],
+        "fuels": c["fuels"], "other_energy": other_energy, "food": c["food"], "core": c["core"],
         "direct": c["energy"], "indirect": c["food"] + c["core"],
-        "total": c[["energy", "food", "core"]].sum(axis=1, min_count=3)})
+        "total": c[["energy", "food", "core"]].sum(axis=1, min_count=3),
+        "electricity": c["electricity"], "household_gas": c["household_gas"],
+        "heating_other": other_energy - c["electricity"] - c["household_gas"]})
+    fuel_parts = pd.DataFrame({"petrol": c["petrol"], "diesel": c["diesel"], "fuels": c["fuels"]})
+    runs = [(parts, "main"), (parts, "pre2021"), (fuel_parts, "from2015")]
     gap = (parts["total"] - pct).loc[s["samples"]["main"]["start"]:].abs()
     price = m[m.component == "headline"].set_index("month")["index"].sort_index()
     z, k = norm.ppf(0.5 + s["band"] / 2), s["scale"]
     rows = []
-    for sample_name in ("main", "pre2021"):
+    for group, sample_name in runs:
         sample = s["samples"][sample_name]
         for h in range(s["horizons"] + 1):
             d = lp_frame(price, inp, "headline", h, s, version, {}, fuels)
             d["break_in_window"] = break_dummy(d.index, h, s)
-            cum = parts.rolling(h + 1).sum().shift(-h)               # sum of contributions over t..t+h
+            cum = group.rolling(h + 1).sum().shift(-h)               # sum of contributions over t..t+h
             valid = cum.notna().all(axis=1)
-            for part in parts.columns:
+            for part in group.columns:
                 d["y"] = cum[part].where(valid)
                 res = fit(d, h, s, sample["start"], sample["end"], version)
                 b, se = res.params["oil"], res.bse["oil"]
@@ -332,6 +342,17 @@ def summarise(res, cfg, crude_share, oil_path, checks):
                          & (res.spec == "baseline") & (res.horizon == h) & (res.regime == "normal")
                          & (res.measure == "response") & (res.policy_handling == c.policy_handling.iloc[0])]
                 print(f"    {ctr} {sample_name:8s}{h:2d}m" + cells + f"{lp.estimate.iloc[0]:14.2f}")
+    detail = [("from2015", "petrol"), ("from2015", "diesel"), ("main", "household_gas"),
+              ("main", "electricity"), ("main", "heating_other"), ("pre2021", "household_gas")]
+    print(f"\n    Energy items, contribution to headline, pp per {s['scale']}% oil rise, 3m / 12m "
+          "(petrol, diesel: 2015-26; gas, electricity, heating: 2008-26 unless marked):")
+    print(f"    {'':4s}" + "".join(f"{(p if smp != 'pre2021' else p + ' 08-21'):>22s}" for smp, p in detail))
+    for ctr in cfg["countries"]:
+        cells = []
+        for smp, p in detail:
+            c = contrib[(contrib.country == ctr) & (contrib["sample"] == smp) & (contrib.measure == f"contrib_{p}")]
+            cells.append(f"{c[c.horizon == 3].estimate.iloc[0]:.2f} / {c[c.horizon == 12].estimate.iloc[0]:.2f}")
+        print(f"    {ctr:4s}" + "".join(f"{x:>22s}" for x in cells))
     print("    Additivity check, energy + food + core contributions vs. actual headline monthly change "
           "(from 2008):")
     for ctr, chk in checks.items():
