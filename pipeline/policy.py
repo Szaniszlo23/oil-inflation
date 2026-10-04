@@ -168,6 +168,71 @@ def monthly_effects(cfg, wk, monthly):
     return pd.concat(rows, ignore_index=True)
 
 
+# --- All interventions since 2021: caps and tax changes on one timeline -------------------------------
+
+def intervention_timeline(cfg, weekly, wk, monthly):
+    """Direct effect of all fuel interventions on headline inflation (y/y, pp), monthly from `timeline_start`.
+
+    Two counterfactual pump prices per week:
+      no caps          pre-tax price without the cap / margin cap / discount (model counterfactual inside
+                       each episode and its after-window, actual otherwise) + the taxes actually charged
+      no intervention  the same pre-tax price + VAT and per-litre taxes frozen at their level in the first
+                       week of `timeline_start`
+    Caps = actual vs 'no caps'; tax changes = the rest (every VAT and excise change after the start date,
+    cuts and increases, including rule-based excise changes such as Hungary's Brent-linked excise).
+    As in monthly_effects(): fuel weight x (actual - counterfactual annual change of the fuels index)."""
+    start = pd.Timestamp(cfg["policy"]["timeline_start"])
+    cap_pre = wk[["country", "fuel", "date", "pre_tax_cf"]].drop_duplicates(["country", "fuel", "date"])
+    rows = []
+    for ctr in cfg["countries"]:
+        m = monthly[monthly.country == ctr]
+        fuels_idx = m[m.component == "fuels"].set_index("month").sort_index()
+        wts = {f: m[m.component == f].set_index("month")["weight"] for f in cfg["stage1"]["fuels"]}
+        ratios = {"caps": {}, "none": {}}
+        for fuel in cfg["stage1"]["fuels"]:
+            g = weekly[(weekly.country == ctr) & (weekly.fuel == fuel) & (weekly.date >= start)].sort_values("date")
+            g = g.merge(cap_pre[(cap_pre.country == ctr) & (cap_pre.fuel == fuel)].drop(columns=["country", "fuel"]),
+                        on="date", how="left")
+            pre = g.pre_tax_cf.fillna(g.price_pre_tax_lcu)
+            base = g.iloc[0]
+            cf_caps = (pre + g.fixed_taxes_lcu) * (1 + g.vat_pct / 100)
+            cf_none = (pre + base.fixed_taxes_lcu) * (1 + base.vat_pct / 100)
+            month = g.date.dt.to_period("M").dt.to_timestamp()
+            ratios["caps"][fuel] = (cf_caps / g.price_with_tax_lcu).groupby(month).mean()
+            ratios["none"][fuel] = (cf_none / g.price_with_tax_lcu).groupby(month).mean()
+        idx = fuels_idx["index"]
+        yoy = lambda s_: 100 * (s_ / s_.shift(12) - 1)
+        out = pd.DataFrame({"fuel_weight": fuels_idx["weight"], "fuels_yoy_actual": yoy(idx)})
+        for kind, per_fuel in ratios.items():
+            pf = pd.DataFrame(per_fuel)
+            fw = pd.DataFrame({f: wts[f].reindex(pf.index) for f in pf.columns}).fillna(1.0)
+            r = ((pf * fw).sum(axis=1) / fw.where(pf.notna()).sum(axis=1)).reindex(idx.index).fillna(1.0)
+            out[f"fuels_yoy_cf_{kind}"] = yoy(idx * r)
+            out[f"price_gap_{kind}_pct"] = 100 * (1 / r - 1)
+        out["caps_pp"] = out.fuel_weight / 1000 * (out.fuels_yoy_actual - out.fuels_yoy_cf_caps)
+        out["total_pp"] = out.fuel_weight / 1000 * (out.fuels_yoy_actual - out.fuels_yoy_cf_none)
+        out["taxes_pp"] = out.total_pp - out.caps_pp
+        out = out.loc[start:].reset_index().rename(columns={"month": "date"})
+        out["country"] = ctr
+        rows.append(out)
+    out = pd.concat(rows, ignore_index=True)
+    out.to_csv(utils.RESULTS / "intervention_timeline.csv", index=False)
+    return out
+
+
+def summarise_timeline(tl, cfg):
+    print("\n    All interventions since " + cfg["policy"]["timeline_start"][:7] +
+          ": direct effect on headline inflation (y/y, pp), annual average (caps / tax changes / total)")
+    for ctr in cfg["countries"]:
+        d = tl[tl.country == ctr].set_index("date")
+        a = d[["caps_pp", "taxes_pp", "total_pp"]].groupby(d.index.year).mean()
+        print(f"    {ctr}: " + "  ".join(f"{y}: {r.caps_pp:+.2f}/{r.taxes_pp:+.2f}/{r.total_pp:+.2f}"
+                                       for y, r in a.iterrows()))
+        lo, hi = d.total_pp.idxmin(), d.total_pp.idxmax()
+        print(f"        lowest {d.total_pp[lo]:+.2f} pp in {lo:%Y-%m}, highest {d.total_pp[hi]:+.2f} pp in {hi:%Y-%m}")
+    print("    Saved outputs/results/intervention_timeline.csv")
+
+
 # --- Cross-check: treated country vs. control countries ----------------------------------------------
 
 def crosscheck(cfg, weekly, monthly):
@@ -221,6 +286,7 @@ def run(cfg):
     mo = monthly_effects(cfg, wk, monthly)
     pd.concat([wk, mo], ignore_index=True).to_csv(utils.RESULTS / "policy_counterfactual.csv", index=False)
     summarise(wk, mo, cfg, "policy_counterfactual.csv")
+    summarise_timeline(intervention_timeline(cfg, weekly, wk, monthly), cfg)
 
     if "crosscheck" in cfg["policy"]:
         cc = crosscheck(cfg, weekly, monthly)

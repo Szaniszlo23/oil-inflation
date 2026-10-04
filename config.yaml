@@ -100,9 +100,9 @@ series:
 # Sanity checks in build.py
 build:
   fx_max_staleness_days: 4          # an ECB rate may be at most this old on a bulletin date (holidays)
-  implied_fx_tolerance_pct: 0.1     # bulletin's implied exchange rate vs ECB, median abs. difference (decisions D4)
+  implied_fx_tolerance_pct: 0.1     # bulletin's implied exchange rate vs ECB, median abs. difference
   implied_fx_check_from: "2015-01-01"
-  vat_mismatch_pp: 1.0              # sheet VAT vs VAT implied by prices: gap that counts as a mismatch (D17)
+  vat_mismatch_pp: 1.0              # sheet VAT vs VAT implied by prices: gap that counts as a mismatch
   vat_snap_pp: 0.2                  # implied VAT must be this close to a rate the country has used
   fixed_tax_mismatch_pct: 1.0       # excise + other taxes: sheet vs prices, % gap that counts as a mismatch
   tax_change_threshold_pct: 1.0     # weekly move in fixed taxes that counts as a tax change (95% of weekly noise is < 0.1%)
@@ -110,15 +110,15 @@ build:
 # Policy measure types allowed in interventions.csv (column `type`)
 policy_types: [hard_cap, margin_cap, discount, post_cap]
 
-# Every model runs once per option; `interactions` is the main estimate (decisions D18)
+# Every model runs once per option; `interactions` is the main estimate
 policy_handling: [interactions, ignore, dummies, exclude]
 
 stage1:
   y: price_pre_tax_lcu              # pre-tax pump price, local currency per litre
-  x: brent_lcu_prev_week            # Brent, 7-day average before the bulletin Monday (D12)
+  x: brent_lcu_prev_week            # Brent, 7-day average before the bulletin Monday
   fuels: [petrol, diesel]
   samples:                          # null start = each country's first bulletin week
-    main: {start: "2008-01-07", end: null}      # common sample (D5)
+    main: {start: "2008-01-07", end: null}      # common sample
     pre2020: {start: "2008-01-07", end: "2019-12-30"}
     full: {start: null, end: null}               # HU and PL from 2005
   interaction_types: [hard_cap, margin_cap, discount]   # change level, speed and impact
@@ -138,17 +138,17 @@ stage1:
 stage2:
   components: [headline, energy, fuels, petrol, diesel, electricity_gas, electricity, household_gas,
                transport_services, food, core, administered, excl_administered]
-  short_components: [petrol, diesel]   # data from 2014-12 only (D3): main sample only, which then starts in 2015
+  short_components: [petrol, diesel]   # data from 2014-12 only: main sample only, which then starts in 2015
   samples:
     main: {start: "2008-01", end: null}         # fuel tax wedge (weekly bulletin) available for all three from 2008
     pre2021: {start: "2008-01", end: "2021-10"} # before the first non-tax measure: market benchmark
-    from2017: {start: "2017-01", end: null}     # components with the 2017 break (D2)
+    from2017: {start: "2017-01", end: null}     # components with the 2017 break
     from2015: {start: "2015-01", end: null}     # petrol and diesel contributions (HICP indices from 2014-12)
   horizons: 12                      # months
   lags: 3                           # lags of the component, oil, exchange rate (and demand control)
   scale: 10                         # responses reported per 10% oil price rise
   band: 0.90
-  break_month: "2017-01"            # ECOICOP ver.2 back-cast break (decisions D2)
+  break_month: "2017-01"            # ECOICOP ver.2 back-cast break
   break_components: [energy, electricity_gas, core]
   tax_control_components: [headline, energy, fuels, petrol, diesel]   # control for the change in the fuel tax wedge
                                                                       # (petrol, diesel: that fuel's own taxes)
@@ -168,11 +168,35 @@ charts:
   policy_start: "2021-07-01"        # first date shown in chart 11 (effect on headline inflation)
   recent_episodes_start: "2026-01-01"   # chart 09 shows episodes starting from this date
   hungary_episode_start: "2021-11-15"   # chart 10: first week of Hungary's 2021-22 cap
+  timeline_line_labels:             # chart 24: labels with a pointer (country, month pointed at, text, text month, text y)
+    - [RO, "2025-10", "Romania: tax increases", "2024-09", 1.4]
+  timeline_periods:                 # chart 24: when measures were in force (country, start, end, label, kind: cap/tax/after)
+    - [PL, "2022-02-01", "2022-12-31", "VAT cut", tax]
+    - [PL, "2023-08-28", "2023-10-20", "Orlen", cap]
+    - [PL, "2026-03-31", "2026-06-30", "max prices + VAT cut", cap]
+    - [PL, "2026-08-17", "2026-08-31", "", cap]
+    - [RO, "2026-04-01", "2026-06-30", "margin cap", cap]
+    - [RO, "2026-08-07", "2026-10-31", "", cap]
+    - [HU, "2021-11-15", "2022-12-06", "price cap", cap]
+    - [HU, "2022-12-07", "2023-09-30", "post-cap premium", after]
+    - [HU, "2026-03-10", "2026-06-26", "price cap", cap]
+    - [HU, "2026-06-27", "2026-09-28", "", after]
+  timeline_labels:                  # chart 24b: episode labels written on the bars (country, month, text)
+    - [PL, "2022-06", "VAT cut"]
+    - [PL, "2023-02", "VAT back up"]
+    - [PL, "2026-05", "max prices + VAT cut"]
+    - [RO, "2024-04", "excise increases"]
+    - [RO, "2025-10", "VAT 19% to 21%"]
+    - [RO, "2026-04", "margin cap"]
+    - [HU, "2022-06", "price cap"]
+    - [HU, "2023-07", "after the cap"]
+    - [HU, "2026-04", "price cap"]
 
 policy:
   after_weeks: 8                    # counterfactual continues this long after each episode ends (catch-up)
   tax_baseline_weeks_before: 4      # "taxes as before" = taxes this many weeks before the episode started
   model_sample: main                # stage1 sample of the normal-times model behind the counterfactual
+  timeline_start: "2021-01-01"      # all-interventions timeline: tax changes counted from here (taxes frozen at this level)
   crosscheck:                       # no-model check: treated country's margin over crude vs. control countries
     country: HU
     controls: [PL, RO]              # their 2021-22 measures were tax cuts (PL) and a discount not in the bulletin (RO)

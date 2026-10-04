@@ -1,7 +1,7 @@
 """
 stage2.py - oil prices -> consumer prices (HICP), monthly local projections.
 
-For each country, HICP component and horizon h = 0..H (docs/decisions.md D20):
+For each country, HICP component and horizon h = 0..H:
 
   100*(ln P_{t+h} - ln P_{t-1}) = a_h + b_h*oil_t + f_h*fx_t
                                   + c_h*oil_t*S_{t,h} + d_h*S_{t,h}      (policy terms)
@@ -73,7 +73,7 @@ def tax_effect(inp, fuels, h):
 
 
 def break_dummy(index, h, s):
-    """1 if the window t..t+h contains the 2017 ECOICOP break month (D2)."""
+    """1 if the window t..t+h contains the 2017 ECOICOP break month."""
     brk = pd.Timestamp(s["break_month"])
     return ((index <= brk) & (index + pd.DateOffset(months=h) >= brk)).astype(float)
 
@@ -264,7 +264,7 @@ def contributions(m):
 
 
 def contribution_responses(m, inp, s, version, fuels, ctr):
-    """Headline response split into contributions (pp), each with its own band (decisions D11).
+    """Headline response split into contributions (pp), each with its own band.
 
     Every part is regressed on the same right-hand side as the headline (its lags, oil, fx, controls,
     the 2017 break dummy) on the same months, so the parts add up exactly to `total`. The dependent

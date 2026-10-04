@@ -6,16 +6,16 @@ Writes:
   data/processed/fuel_weekly.parquet   one row per country x fuel x Oil Bulletin week
   data/processed/hicp_monthly.parquet  one row per country x HICP component x month
 
-Conversions (see docs/decisions.md):
+Conversions:
   - Oil Bulletin prices: EUR per 1000 litres -> local currency per litre, with the
-    ECB reference rate of the same day (D4: this is the rate the bulletin itself uses)
+    ECB reference rate of the same day (this is the rate the bulletin itself uses)
   - Brent: USD per barrel -> local currency per litre, daily, then per bulletin week
     (same day and previous-week average) and per month
-  - Taxes: VAT, excise and other indirect taxes from the bulletin's own tax sheets (D7),
+  - Taxes: VAT, excise and other indirect taxes from the bulletin's own tax sheets,
     checked against the bulletin's prices; where they disagree, the rates embedded in
-    the prices are used and the periods are reported (D17)
+    the prices are used and the periods are reported
   - Weekly grid: holiday gaps in the bulletin are filled by linear interpolation and
-    flagged (`interpolated`); Brent for those Mondays comes from the daily data (D6)
+    flagged (`interpolated`); Brent for those Mondays comes from the daily data
   - Policy flags: price caps, subsidies etc. from interventions.csv, one column per type
   - Robustness inputs for Stage 2: HICP at constant tax rates (`index_ct`) and the EU gas price
 
@@ -62,7 +62,7 @@ def jsonstat_long(js):
 
 def load_fx(snap):
     raw = pd.read_csv(snap / "ecb_fx.csv", usecols=["CURRENCY", "TIME_PERIOD", "OBS_VALUE"])
-    raw = raw.dropna(subset=["OBS_VALUE"])  # days without a fixing (decisions D10)
+    raw = raw.dropna(subset=["OBS_VALUE"])  # days without a fixing
     fx = raw.pivot(index="TIME_PERIOD", columns="CURRENCY", values="OBS_VALUE")
     fx.index = pd.to_datetime(fx.index)
     return fx.sort_index()  # units of currency per EUR
@@ -138,7 +138,7 @@ def tax_on_dates(steps, country, fuel, dates):
 
 
 def effective_taxes(g, valid_vat, b):
-    """Tax rates as embedded in the bulletin's own prices (decisions D17).
+    """Tax rates as embedded in the bulletin's own prices.
 
     The price sheets are internally consistent, but the dates in the VAT and excise
     sheets are sometimes wrong. So:
@@ -178,7 +178,7 @@ def report_tax_mismatches(weekly):
     if bad.empty:
         print("    tax sheets consistent with prices everywhere")
         return
-    print("    tax sheets disagree with prices (rates taken from the prices instead, decisions D17):")
+    print("    tax sheets disagree with prices (rates taken from the prices instead):")
     for (ctr, fuel), g in bad.groupby(["country", "fuel"]):
         runs = (g.date.diff().dt.days > 21).cumsum()
         spans = [f"{r.date.min():%Y-%m-%d}..{r.date.max():%Y-%m-%d}" if len(r) > 1 else f"{r.date.min():%Y-%m-%d}"
@@ -262,7 +262,7 @@ def build_fuel_weekly(snap, cfg, fx, brent, iv):
     taxes = {k: load_tax_steps(snap, cfg, k) for k in ("vat", "excise", "other_taxes")}
     rows = []
     for (ctr, fuel), g in prices.groupby(["country", "fuel"]):
-        # regular Monday grid: holiday gaps get linearly interpolated prices and a flag (D6)
+        # regular Monday grid: holiday gaps get linearly interpolated prices and a flag
         g = g.set_index("date").sort_index()
         grid = pd.date_range(g.index.min(), g.index.max(), freq="W-MON")
         g = g.reindex(grid).rename_axis("date")
@@ -411,7 +411,7 @@ def check(weekly, monthly, cfg):
     if not np.allclose(total.weight, 1000):
         problems.append("headline HICP weights do not sum to 1000 in every year")
 
-    # D4: the exchange rate implied by the bulletin's own taxes should equal the ECB rate
+    # the exchange rate implied by the bulletin's own taxes should equal the ECB rate
     w = weekly[(weekly.date >= b["implied_fx_check_from"])].dropna(
         subset=["vat_pct_sheet", "excise_lcu_sheet", "price_with_tax_eur", "price_pre_tax_eur"])
     for ctr, g in w.groupby("country"):
@@ -425,7 +425,7 @@ def check(weekly, monthly, cfg):
         raise ValueError("Sanity checks failed:\n  - " + "\n  - ".join(problems))
 
     filled = weekly[weekly.interpolated].drop_duplicates(["country", "date"]).groupby("country").size()
-    print(f"    checks passed; holiday weeks filled by interpolation (decisions D6): {filled.to_dict()}")
+    print(f"    checks passed; holiday weeks filled by interpolation: {filled.to_dict()}")
 
 
 # --- Entry point (called by run.py) -------------------------------------------------------

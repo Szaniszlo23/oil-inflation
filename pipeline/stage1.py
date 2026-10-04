@@ -1,5 +1,5 @@
 """
-stage1.py - crude oil -> pump prices before tax, weekly (docs/decisions.md D18).
+stage1.py - crude oil -> pump prices before tax, weekly.
 
 For each country and fuel, a two-step error-correction model in levels
 (local currency per litre):

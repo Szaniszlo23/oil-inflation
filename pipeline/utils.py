@@ -62,7 +62,7 @@ FUEL_STYLES = {"petrol": "-", "diesel": "--"}
 COLORS = {"crude": "#1F4E79", "margin": "#8FB4D9", "taxes": "#C9C9C9", "policy": "#F4D6D2",
           "grey": "#595959", "light": "#D9D9D9", "accent": "#C00000"}
 CHART_STYLE = {
-    "font.family": "DejaVu Sans", "font.size": 10, "axes.titlesize": 11, "axes.titleweight": "bold",
+    "font.family": "Arial", "font.size": 10, "axes.titlesize": 11, "axes.titleweight": "bold",
     "axes.titlelocation": "left", "axes.labelsize": 9, "axes.spines.top": False, "axes.spines.right": False,
     "axes.edgecolor": "#7F7F7F", "axes.grid": True, "axes.grid.axis": "y", "grid.color": "#E6E6E6",
     "grid.linewidth": 0.8, "xtick.labelsize": 9, "ytick.labelsize": 9, "legend.fontsize": 9, "axes.axisbelow": True,
